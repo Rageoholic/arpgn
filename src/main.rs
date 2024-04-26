@@ -1,3 +1,4 @@
+#![warn(unsafe_op_in_unsafe_fn, clippy::undocumented_unsafe_blocks)]
 use std::sync::Arc;
 
 use structopt::StructOpt;
@@ -63,19 +64,19 @@ fn main() {
                 Event::LoopExiting => {}
                 _ => {}
             },
+
             Some((ref win, _)) => match event {
                 Event::WindowEvent { window_id, event } => match event {
-                    WindowEvent::CloseRequested => {
-                        //I dunno if this guard is necessary but I am paranoid
-                        //so whatever
-                        if win.id() == window_id {
-                            win.set_visible(false);
-                            output_opt = None;
-                            loop_target.exit()
-                        }
+                    WindowEvent::CloseRequested if win.id() == window_id => {
+                        win.set_visible(false);
+                        output_opt = None;
+                        loop_target.exit()
                     }
                     _ => {}
                 },
+                Event::AboutToWait => {
+                    //render here
+                }
                 _ => {}
             },
         })

@@ -10,12 +10,12 @@ ash = "0.38.0"
 ash-window = "0.13.0"
 bytemuck = "1.15.0"
 env_logger = "0.11.3"
-log = "0.4.21"
+log = { version = "0.4.21", features = ["kv"] }
 structopt = "0.3.26"
 winit = "0.29.15"
 # Enable a small amount of optimization in debug mode
 [profile.dev]
-opt-level = 1
+opt-level = 0
 
 [profile.dev.package."*"]
 opt-level = 3
