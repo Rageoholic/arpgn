@@ -18,8 +18,8 @@ const DEFAULT_WINDOW_HEIGHT: i32 = 720;
 
 #[derive(Debug, StructOpt)]
 struct Opt {
-    #[structopt(long)]
-    graphics_validation_layers: bool,
+    #[structopt(long, default_value = "Warning")]
+    graphics_validation_layers: graphics::GraphicsValidationLevel,
 }
 
 fn main() {
@@ -74,9 +74,7 @@ fn main() {
                     }
                     _ => {}
                 },
-                Event::AboutToWait => {
-                    //render here
-                }
+                Event::AboutToWait => {}
                 _ => {}
             },
         })

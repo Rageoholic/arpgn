@@ -12,6 +12,7 @@ bytemuck = "1.15.0"
 env_logger = "0.11.3"
 log = { version = "0.4.21", features = ["kv"] }
 structopt = "0.3.26"
+strum = { version = "0.26.2", features = ["strum_macros", "derive"] }
 winit = "0.29.15"
 # Enable a small amount of optimization in debug mode
 [profile.dev]
