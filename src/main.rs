@@ -1,4 +1,4 @@
-#![warn(unsafe_op_in_unsafe_fn, clippy::undocumented_unsafe_blocks)]
+//#![warn(unsafe_op_in_unsafe_fn, clippy::undocumented_unsafe_blocks)]
 use std::sync::Arc;
 
 use structopt::StructOpt;
@@ -18,8 +18,8 @@ const DEFAULT_WINDOW_HEIGHT: i32 = 720;
 
 #[derive(Debug, StructOpt)]
 struct Opt {
-    #[structopt(long, default_value = "Warning")]
-    graphics_validation_layers: graphics::GraphicsValidationLevel,
+    #[structopt(long, default_value = "None")]
+    graphics_validation_level: graphics::ValidationLevel,
 }
 
 fn main() {
@@ -39,6 +39,7 @@ fn main() {
                     output_opt = {
                         let win = WindowBuilder::new()
                             .with_visible(false)
+                            .with_resizable(false)
                             .with_inner_size(LogicalSize::new(
                                 DEFAULT_WINDOW_WIDTH,
                                 DEFAULT_WINDOW_HEIGHT,
@@ -54,7 +55,7 @@ fn main() {
                         let graphics_context = graphics::Context::new(
                             win.clone(),
                             graphics::ContextCreateOpts {
-                                graphics_validation_layers: opts.graphics_validation_layers,
+                                graphics_validation_layers: opts.graphics_validation_level,
                             },
                         )
                         .unwrap();
