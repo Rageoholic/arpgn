@@ -39,7 +39,7 @@ fn main() {
                     output_opt = {
                         let win = WindowBuilder::new()
                             .with_visible(false)
-                            .with_resizable(false)
+                            .with_resizable(true)
                             .with_inner_size(LogicalSize::new(
                                 DEFAULT_WINDOW_WIDTH,
                                 DEFAULT_WINDOW_HEIGHT,
@@ -66,7 +66,7 @@ fn main() {
                 _ => {}
             },
 
-            Some((ref win, _)) => match event {
+            Some((ref win, ref mut context)) => match event {
                 Event::WindowEvent { window_id, event } => match event {
                     WindowEvent::CloseRequested if win.id() == window_id => {
                         win.set_visible(false);
@@ -75,7 +75,7 @@ fn main() {
                     }
                     _ => {}
                 },
-                Event::AboutToWait => {}
+                Event::AboutToWait => context.draw(),
                 _ => {}
             },
         })

@@ -4,14 +4,14 @@ use std::{
     fmt::Debug,
     os::raw::c_void,
     ptr::null,
-    sync::Arc,
+    sync::{Arc, RwLock},
 };
 
 use ash::{
     ext::debug_utils,
     khr::{self, surface, swapchain},
     prelude::VkResult,
-    vk::{self, DebugUtilsMessageSeverityFlagsEXT, DebugUtilsMessageTypeFlagsEXT},
+    vk::{self},
     Entry, LoadingError,
 };
 
@@ -22,16 +22,21 @@ use winit::{
     window::Window,
 };
 
+const MAX_FRAMES_IN_FLIGHT: usize = 2;
+
 struct ContextNonDebug {
     _entry: Arc<Entry>,
     _instance: Arc<Instance>,
-    _swapchain: Swapchain,
+    swapchain: Swapchain,
     _dev: Arc<Device>,
     _surface: Arc<Surface>,
+    pipeline_layout: PipelineLayout,
+    shader_stages: ShaderStages,
+    phys_dev: PhysicalDevice,
 }
 
 struct Surface {
-    inner: vk::SurfaceKHR,
+    inner: RwLock<vk::SurfaceKHR>,
     instance: surface::Instance,
     _parent_instance: Arc<Instance>,
     parent_window: Arc<Window>,
@@ -40,7 +45,10 @@ struct Surface {
 impl Drop for Surface {
     fn drop(&mut self) {
         //SAFETY: Last use of surface, all child objects are destroyed
-        unsafe { self.instance.destroy_surface(self.inner, None) }
+        unsafe {
+            self.instance
+                .destroy_surface(*self.inner.get_mut().unwrap(), None)
+        }
     }
 }
 
@@ -57,7 +65,7 @@ impl Surface {
         //SAFETY: fetching owned data from a valid phys_dev
         unsafe {
             self.instance
-                .get_physical_device_surface_support(phys_dev.inner, i, self.inner)
+                .get_physical_device_surface_support(phys_dev.inner, i, *self.inner.read().unwrap())
                 .unwrap()
         }
     }
@@ -68,8 +76,10 @@ impl Surface {
     ) -> vk::SurfaceCapabilitiesKHR {
         //SAFETY: Copying owned data
         unsafe {
-            self.instance
-                .get_physical_device_surface_capabilities(phys_dev.inner, self.inner)
+            self.instance.get_physical_device_surface_capabilities(
+                phys_dev.inner,
+                *self.inner.read().unwrap(),
+            )
         }
         .unwrap()
     }
@@ -80,8 +90,10 @@ impl Surface {
     ) -> Vec<vk::PresentModeKHR> {
         //SAFETY: fetching owned data
         unsafe {
-            self.instance
-                .get_physical_device_surface_present_modes(phys_dev.inner, self.inner)
+            self.instance.get_physical_device_surface_present_modes(
+                phys_dev.inner,
+                *self.inner.read().unwrap(),
+            )
         }
         .unwrap()
     }
@@ -89,10 +101,11 @@ impl Surface {
         &self,
         phys_dev: &PhysicalDevice,
     ) -> VkResult<Vec<vk::SurfaceFormatKHR>> {
-        //SAFETY: This is okay because surface is known to be valid and we're getting a Vec of PODs
+        //SAFETY: This is okay because surface is known to be valid and we're
+        //getting a Vec of PODs
         unsafe {
             self.instance
-                .get_physical_device_surface_formats(phys_dev.inner, self.inner)
+                .get_physical_device_surface_formats(phys_dev.inner, *self.inner.read().unwrap())
         }
     }
 
@@ -112,11 +125,24 @@ impl Surface {
         let surface_instance = ash::khr::surface::Instance::new(&instance.parent, &instance.inner);
 
         Ok(Self {
-            inner: surface,
+            inner: RwLock::new(surface),
             instance: surface_instance,
             _parent_instance: instance.clone(),
             parent_window: win.clone(),
         })
+    }
+}
+
+struct PipelineLayout {
+    inner: vk::PipelineLayout,
+    parent: Arc<Device>,
+}
+
+impl Drop for PipelineLayout {
+    fn drop(&mut self) {
+        //SAFETY: We know this is okay because our safety requirement is that
+        //this is dropped after any child object and we make sure of that
+        unsafe { self.parent.inner.destroy_pipeline_layout(self.inner, None) };
     }
 }
 
@@ -128,7 +154,7 @@ struct Instance {
 
 struct Queue {
     qfi: u32,
-    _inner: vk::Queue,
+    inner: RwLock<vk::Queue>,
     _parent: Arc<Device>,
 }
 
@@ -137,7 +163,132 @@ struct Device {
     parent: Arc<Instance>,
 }
 
+struct GraphicsPipeline {
+    inner: vk::Pipeline,
+    parent: Arc<Device>,
+}
+
+impl Drop for GraphicsPipeline {
+    fn drop(&mut self) {
+        //SAFETY: We made the pipeline in here from parent
+        unsafe { self.parent.inner.destroy_pipeline(self.inner, None) }
+    }
+}
+
+struct CommandBuffer {
+    inner: vk::CommandBuffer,
+    parent: Arc<CommandPool>,
+}
+
+impl Drop for CommandBuffer {
+    fn drop(&mut self) {
+        let command_buffers = [self.inner];
+        //SAFETY: Synchronize access to command_pool via rwlock. Exclusively own
+        //command_buffers. command buffers is derived from command_pool
+        unsafe {
+            self.parent
+                .parent
+                .inner
+                .free_command_buffers(*self.parent.inner.write().unwrap(), &command_buffers)
+        }
+    }
+}
+
+struct CommandPool {
+    inner: RwLock<vk::CommandPool>,
+    parent: Arc<Device>,
+}
+
+impl CommandPool {
+    fn create_command_buffers(self: &Arc<Self>, count: u32) -> VkResult<Vec<CommandBuffer>> {
+        let inner = self.inner.write().unwrap();
+        let alloc_info = vk::CommandBufferAllocateInfo::default()
+            .command_buffer_count(count)
+            .command_pool(*inner);
+
+        //SAFETY: alloc_info is valid. Inner is an exclusive ref to the command pool
+        unsafe { self.parent.inner.allocate_command_buffers(&alloc_info) }.map(|command_buffers| {
+            command_buffers
+                .iter()
+                .copied()
+                .map(|command_buffer| CommandBuffer {
+                    inner: command_buffer,
+                    parent: self.clone(),
+                })
+                .collect()
+        })
+    }
+}
+
+impl Drop for CommandPool {
+    fn drop(&mut self) {
+        //SAFETY: We own these values and anyone holding onto a command pool from here needs to hold a ref to this.
+        //Additionally, we have an &mut ref which means we have exclusive ownership for any synch requirements
+        unsafe {
+            self.parent
+                .inner
+                .destroy_command_pool(*self.inner.get_mut().unwrap(), None)
+        }
+    }
+}
+
 impl Device {
+    fn get_inner(&self) -> &ash::Device {
+        &self.inner
+    }
+    unsafe fn create_command_pool(
+        self: &Arc<Self>,
+        create_info: &vk::CommandPoolCreateInfo,
+    ) -> VkResult<CommandPool> {
+        //SAFETY: create_info is valid
+        unsafe { self.inner.create_command_pool(create_info, None) }.map(|inner| CommandPool {
+            inner: RwLock::new(inner),
+            parent: self.clone(),
+        })
+    }
+    unsafe fn create_graphics_pipelines(
+        self: &Arc<Self>,
+        create_infos: &[vk::GraphicsPipelineCreateInfo],
+    ) -> VkResult<Vec<GraphicsPipeline>> {
+        //SAFETY: Using transient safety from being in an unsafe fn, create_info is valid
+        unsafe {
+            self.inner
+                .create_graphics_pipelines(vk::PipelineCache::null(), create_infos, None)
+        }
+        .map(|v| {
+            v.iter()
+                .map(|inner| GraphicsPipeline {
+                    inner: *inner,
+                    parent: self.clone(),
+                })
+                .collect()
+        })
+        .map_err(|(_, err)| err)
+    }
+
+    unsafe fn create_render_pass(
+        self: &Arc<Self>,
+        create_info: &vk::RenderPassCreateInfo,
+    ) -> VkResult<RenderPass> {
+        //SAFETY: Using transient safety from being in an unsafe fn, create_info is valid
+        unsafe { self.inner.create_render_pass(create_info, None) }.map(|inner| RenderPass {
+            inner,
+            parent: self.clone(),
+        })
+    }
+    unsafe fn create_pipeline_layout(
+        self: &Arc<Self>,
+        create_info: &vk::PipelineLayoutCreateInfo,
+    ) -> VkResult<PipelineLayout> {
+        //SAFETY: Using transient safety from being in an unsafe fn, create_info is valid
+        unsafe { self.inner.create_pipeline_layout(create_info, None) }.map(|inner| {
+            PipelineLayout {
+                inner,
+                parent: self.clone(),
+            }
+        })
+    }
+
     fn create_shader_module(
         self: &Arc<Self>,
         source: shaderc::CompilationArtifact,
@@ -154,16 +305,38 @@ impl Device {
     fn get_device_queue(self: &Arc<Self>, qfi: u32, queue_index: u32) -> Queue {
         Queue {
             //SAFETY: This must be dropped in order to drop the device
-            _inner: unsafe { self.inner.get_device_queue(qfi, queue_index) },
+            inner: RwLock::new(unsafe { self.inner.get_device_queue(qfi, queue_index) }),
             _parent: self.clone(),
             qfi,
         }
     }
 }
 
+struct ShaderStages {
+    vert: ShaderModule,
+    frag: ShaderModule,
+}
+
+impl ShaderStages {
+    //SAFETY: This array has an implicitly tied lifetime to self
+    unsafe fn to_array(&self) -> Vec<vk::PipelineShaderStageCreateInfo> {
+        vec![
+            vk::PipelineShaderStageCreateInfo::default()
+                .module(self.vert.inner)
+                .stage(vk::ShaderStageFlags::VERTEX)
+                .name(c"main"),
+            vk::PipelineShaderStageCreateInfo::default()
+                .module(self.frag.inner)
+                .stage(vk::ShaderStageFlags::FRAGMENT)
+                .name(c"main"),
+        ]
+    }
+}
+
 impl Drop for Device {
     fn drop(&mut self) {
-        //SAFETY: Last use of device. All other references should have been dropped
+        //SAFETY: Last use of device. All other references should have been
+        //dropped
         unsafe { self.inner.destroy_device(None) };
     }
 }
@@ -188,7 +361,8 @@ impl Instance {
             .application_name(c"placeholder")
             .engine_name(c"placeholder");
 
-        //SAFETY: We know this is safe because we drop this Vec before we drop entry
+        //SAFETY: We know this is safe because we drop this Vec before we drop
+        //entry
         let avail_extensions = unsafe { entry.enumerate_instance_extension_properties(None) }
             .map_err(|_| Error::InstanceCreation)?;
 
@@ -199,10 +373,6 @@ impl Instance {
         let mut missing_instance_extensions = Vec::new();
 
         for ext in required_instance_extensions.iter().copied() {
-            //SAFETY: We know that these extensions are valid for the runtime of
-            //the program because they come from ash_window which has a lifetime
-            //of static
-
             match avail_extensions.iter().find(|instance_ext| {
                 let instance_ext = instance_ext
                     .extension_name_as_c_str()
@@ -297,8 +467,8 @@ impl Instance {
                 .pfn_user_callback(Some(debug_callback));
 
             let debug_messenger = {
-                //SAFETY: Should always be fine if we got here. We added the layers
-                //we care about and the extension
+                //SAFETY: Should always be fine if we got here. We added the
+                //layers we care about and the extension
                 unsafe { debug_instance.create_debug_utils_messenger(&debug_ci, None) }.unwrap()
             };
 
@@ -309,8 +479,8 @@ impl Instance {
             //SAFETY: Should always be fine
             unsafe {
                 debug_instance.submit_debug_utils_message(
-                    DebugUtilsMessageSeverityFlagsEXT::INFO,
-                    DebugUtilsMessageTypeFlagsEXT::VALIDATION,
+                    vk::DebugUtilsMessageSeverityFlagsEXT::INFO,
+                    vk::DebugUtilsMessageTypeFlagsEXT::VALIDATION,
                     &debug_message_info,
                 )
             };
@@ -434,7 +604,7 @@ impl Debug for ContextNonDebug {
 #[derive(Debug)]
 pub struct Context {
     _win: Arc<Window>,
-    _nd: ContextNonDebug,
+    nd: ContextNonDebug,
 }
 
 impl Drop for Instance {
@@ -473,6 +643,7 @@ pub enum Error {
     DeviceCreation,
     SurfaceCreation,
     SwapchainCreation,
+    CommandBufferCreation,
 }
 
 //SAFETY: Meant to be passed to pfn_user_callback in DebugUtilsCreateInfoEXT.
@@ -553,28 +724,30 @@ fn debug_utils_message_type_to_str(
 
 const KHRONOS_VALIDATION_LAYER_NAME: &CStr = c"VK_LAYER_KHRONOS_validation";
 
-struct Swapchain {
-    inner: vk::SwapchainKHR,
-    parent: Arc<Device>,
-    device: swapchain::Device,
-    _graphics_queue: Queue,
-    _present_queue: Queue,
+struct Replaceable {
     image_views: Vec<vk::ImageView>,
-    _format: vk::Format,
-    _images: Vec<vk::Image>,
-    _extent: vk::Extent2D,
+    extent: vk::Extent2D,
+    inner: vk::SwapchainKHR,
+    framebuffers: Vec<vk::Framebuffer>,
+    render_pass: RenderPass,
+    graphics_pipeline: GraphicsPipeline,
+    device: Arc<Device>,
+    swapchain_device: Arc<swapchain::Device>,
 }
 
-impl Swapchain {
-    fn new(
-        device: Arc<Device>,
+impl Replaceable {
+    #[allow(clippy::too_many_arguments)]
+    unsafe fn new(
+        swapchain_device: &Arc<swapchain::Device>,
+        surface: &Arc<Surface>,
         phys_dev: &PhysicalDevice,
-        surface: Arc<Surface>,
-        graphics_queue: Queue,
-        present_queue: Queue,
-    ) -> Result<Self, Error> {
-        let swapchain_device = swapchain::Device::new(&device.parent.inner, &device.inner);
-
+        graphics_queue: &Queue,
+        present_queue: &Queue,
+        device: &Arc<Device>,
+        shader_stages: &ShaderStages,
+        pipeline_layout: &PipelineLayout,
+        old_swapchain: Option<&vk::SwapchainKHR>,
+    ) -> VkResult<Self> {
         let swapchain_formats = { surface.get_physical_device_surface_formats(phys_dev) }.unwrap();
 
         let swapchain_present_modes = surface.get_physical_device_surface_present_modes(phys_dev);
@@ -622,8 +795,11 @@ impl Swapchain {
 
         let shared_graphics_present_queue = graphics_queue.qfi == present_queue.qfi;
 
+        //create_swapchain_KHR requires external sync on the surface
+        let surface_mut = surface.inner.write().unwrap();
+
         let swapchain_ci = vk::SwapchainCreateInfoKHR {
-            surface: surface.inner,
+            surface: *surface_mut,
             min_image_count: swap_image_count,
             image_format: swapchain_format.format,
             image_color_space: swapchain_format.color_space,
@@ -645,18 +821,16 @@ impl Swapchain {
             composite_alpha: vk::CompositeAlphaFlagsKHR::OPAQUE,
             present_mode: swapchain_present_mode,
             clipped: vk::TRUE,
-
+            old_swapchain: old_swapchain.copied().unwrap_or(vk::SwapchainKHR::null()),
             ..Default::default()
         };
-
         //SAFETY: Allocation callbacks must be valid, swapchain_ci must be
         //valid, swapchain must be destroyed before surface
-        let swapchain = unsafe { swapchain_device.create_swapchain(&swapchain_ci, None) }
-            .map_err(|_| Error::SwapchainCreation)?;
+        let swapchain = unsafe { swapchain_device.create_swapchain(&swapchain_ci, None) }?;
 
         //SAFETY: Images are implicitly destroyed with the swapchain, tied together via Drop
         let images = unsafe { swapchain_device.get_swapchain_images(swapchain) }.unwrap();
-        let image_views = images
+        let image_views: Vec<_> = images
             .iter()
             .map(|image| {
                 let ivci = vk::ImageViewCreateInfo::default()
@@ -676,29 +850,413 @@ impl Swapchain {
             })
             .collect();
 
-        Ok(Swapchain {
-            inner: swapchain,
-            parent: device.clone(),
-            device: swapchain_device,
-            _graphics_queue: graphics_queue,
-            _present_queue: present_queue,
-            _extent: swap_extent,
-            _images: images,
-            _format: swapchain_format.format,
+        let color_attachment_refs = [vk::AttachmentReference::default()
+            .attachment(0)
+            .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)];
+
+        let multisampling = vk::PipelineMultisampleStateCreateInfo::default()
+            .sample_shading_enable(false)
+            .rasterization_samples(vk::SampleCountFlags::TYPE_1);
+
+        let color_attachments = [vk::AttachmentDescription::default()
+            .format(swapchain_ci.image_format)
+            .samples(multisampling.rasterization_samples)
+            .load_op(vk::AttachmentLoadOp::CLEAR)
+            .store_op(vk::AttachmentStoreOp::STORE)
+            .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
+            .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
+            .initial_layout(vk::ImageLayout::UNDEFINED)
+            .final_layout(vk::ImageLayout::PRESENT_SRC_KHR)];
+
+        let subpasses = [vk::SubpassDescription::default()
+            .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
+            .color_attachments(&color_attachment_refs)];
+
+        let dependencies = [vk::SubpassDependency {
+            src_subpass: vk::SUBPASS_EXTERNAL,
+            dst_subpass: 0,
+            src_stage_mask: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+            dst_stage_mask: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+            src_access_mask: vk::AccessFlags::empty(),
+            dst_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+            dependency_flags: Default::default(),
+        }];
+
+        let render_pass_ci = vk::RenderPassCreateInfo::default()
+            .attachments(&color_attachments)
+            .subpasses(&subpasses)
+            .dependencies(&dependencies);
+
+        let pipeline_input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
+            .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
+            .primitive_restart_enable(false);
+        let viewports = [vk::Viewport::default()
+            .width(swap_extent.width as f32)
+            .height(swap_extent.height as f32)];
+        let scissors = [vk::Rect2D {
+            offset: vk::Offset2D { x: 0, y: 0 },
+            extent: swap_extent,
+        }];
+
+        let viewport_state = vk::PipelineViewportStateCreateInfo::default()
+            .viewports(&viewports)
+            .scissors(&scissors);
+
+        let rasterizer = vk::PipelineRasterizationStateCreateInfo::default()
+            .depth_clamp_enable(false)
+            .rasterizer_discard_enable(false)
+            .polygon_mode(vk::PolygonMode::FILL)
+            .line_width(1.0)
+            .cull_mode(vk::CullModeFlags::BACK)
+            .front_face(vk::FrontFace::CLOCKWISE)
+            .depth_bias_enable(false);
+
+        let color_blend_attachments = [vk::PipelineColorBlendAttachmentState::default()
+            .color_write_mask(vk::ColorComponentFlags::RGBA)
+            .blend_enable(false)];
+
+        let color_blending = vk::PipelineColorBlendStateCreateInfo::default()
+            .logic_op_enable(false)
+            .attachments(&color_blend_attachments);
+
+        //SAFETY: lifetimes are tied here
+        let shader_stages_cis = unsafe { shader_stages.to_array() };
+
+        let pipeline_vertex_input = vk::PipelineVertexInputStateCreateInfo::default()
+            .vertex_binding_descriptions(&[])
+            .vertex_attribute_descriptions(&[]);
+
+        let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
+        let pipeline_dynamic_state =
+            vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
+
+        let render_pass =
+            //SAFETY: render_pass_ci must be valid, we create it
+             unsafe { device.create_render_pass(&render_pass_ci) }.unwrap();
+        let framebuffers: Vec<_> = image_views
+            .iter()
+            .map(|iv| {
+                let attachments = [*iv];
+                let framebuffer_ci = vk::FramebufferCreateInfo::default()
+                    .render_pass(render_pass.inner)
+                    .layers(1)
+                    .attachments(&attachments)
+                    .width(swap_extent.width)
+                    .height(swap_extent.height);
+
+                //SAFETY: valid ci
+                unsafe {
+                    device
+                        .inner
+                        .create_framebuffer(&framebuffer_ci, None)
+                        .unwrap()
+                }
+            })
+            .collect();
+
+        let graphics_pipeline_ci = vk::GraphicsPipelineCreateInfo::default()
+            .stages(&shader_stages_cis)
+            .layout(pipeline_layout.inner)
+            .vertex_input_state(&pipeline_vertex_input)
+            .input_assembly_state(&pipeline_input_assembly)
+            .viewport_state(&viewport_state)
+            .rasterization_state(&rasterizer)
+            .multisample_state(&multisampling)
+            .color_blend_state(&color_blending)
+            .dynamic_state(&pipeline_dynamic_state)
+            .layout(pipeline_layout.inner)
+            .render_pass(render_pass.inner)
+            .subpass(0);
+
+        let graphics_pipeline =
+            //SAFETY: CI must be valid
+            unsafe { device.create_graphics_pipelines(&[graphics_pipeline_ci]) }
+                .unwrap()
+                .pop()
+                .unwrap();
+
+        Ok(Self {
+            extent: swap_extent,
             image_views,
+            inner: swapchain,
+            framebuffers,
+            render_pass,
+            graphics_pipeline,
+            device: device.clone(),
+            swapchain_device: swapchain_device.clone(),
         })
+    }
+}
+
+struct Swapchain {
+    parent: Arc<Device>,
+    graphics_queue: Queue,
+    present_queue: Queue,
+    command_buffers: Vec<CommandBuffer>,
+    image_available_semaphores: Vec<vk::Semaphore>,
+    render_finished_semaphores: Vec<vk::Semaphore>,
+    in_flight_fences: Vec<vk::Fence>,
+    frame: usize,
+    surface: Arc<Surface>,
+
+    r: Replaceable,
+}
+
+impl Swapchain {
+    //TODO: Clean this up
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        device: Arc<Device>,
+        phys_dev: &PhysicalDevice,
+        surface: Arc<Surface>,
+        graphics_queue: Queue,
+        present_queue: Queue,
+        command_pool: Arc<CommandPool>,
+        pipeline_layout: &PipelineLayout,
+        shader_stages: &ShaderStages,
+    ) -> Result<Self, Error> {
+        let swapchain_device =
+            Arc::new(swapchain::Device::new(&device.parent.inner, &device.inner));
+
+        let semaphore_ci = vk::SemaphoreCreateInfo::default();
+        let fence_ci = vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED);
+
+        let mut image_available_semaphores = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
+        let mut render_finished_semaphores = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
+        let mut in_flight_fences = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
+
+        for _ in 0..MAX_FRAMES_IN_FLIGHT {
+            image_available_semaphores.push(
+                //SAFETY: We destroy this in Swapchain::drop() before device is destroyed
+                unsafe { device.inner.create_semaphore(&semaphore_ci, None) }.unwrap(),
+            );
+            render_finished_semaphores.push(
+                //SAFETY: Destroyed in Swapchain::drop()
+                unsafe { device.inner.create_semaphore(&semaphore_ci, None) }.unwrap(),
+            );
+            in_flight_fences.push(
+                //SAFETY: Destroyed in Swapchain::drop()
+                unsafe { device.inner.create_fence(&fence_ci, None) }.unwrap(),
+            );
+        }
+
+        let command_buffers = command_pool
+            .create_command_buffers(MAX_FRAMES_IN_FLIGHT as u32)
+            .map_err(|_| Error::CommandBufferCreation)?;
+
+        //SAFETY: Known to be good
+        let r = unsafe {
+            Replaceable::new(
+                &swapchain_device,
+                &surface,
+                phys_dev,
+                &graphics_queue,
+                &present_queue,
+                &device,
+                shader_stages,
+                pipeline_layout,
+                None,
+            )
+            .map_err(|_| Error::SwapchainCreation)
+        }?;
+
+        Ok(Swapchain {
+            r,
+            parent: device.clone(),
+            graphics_queue,
+            present_queue,
+            command_buffers,
+
+            image_available_semaphores,
+            render_finished_semaphores,
+            in_flight_fences,
+            surface: surface.clone(),
+            frame: 0,
+        })
+    }
+
+    fn draw(&mut self) -> VkResult<()> {
+        let sync_index = self.frame;
+        self.frame = (self.frame + 1) % MAX_FRAMES_IN_FLIGHT;
+        let dev = self.parent.get_inner();
+        let swapchain_device = &self.r.swapchain_device;
+
+        let in_flight_fence = self.in_flight_fences[sync_index];
+        let fences = [in_flight_fence];
+        let image_available_semaphore = self.image_available_semaphores[sync_index];
+        let render_finished_semaphore = self.render_finished_semaphores[sync_index];
+        //SAFETY: fences are valid and from device
+        let index = unsafe {
+            dev.wait_for_fences(&fences, true, u64::MAX)?;
+            dev.reset_fences(&fences)?;
+
+            let index = swapchain_device
+                .acquire_next_image(
+                    self.r.inner,
+                    u64::MAX,
+                    image_available_semaphore,
+                    vk::Fence::null(),
+                )?
+                .0;
+            dev.reset_fences(&fences)?;
+            index
+        };
+        let cb = self.command_buffers[sync_index].inner;
+
+        //SAFETY: command buffer comes from dev. Is not in use.
+        unsafe { dev.reset_command_buffer(cb, vk::CommandBufferResetFlags::empty())? };
+        let dev = self.parent.get_inner();
+        let command_buffer_begin_info = vk::CommandBufferBeginInfo::default();
+
+        //SAFETY: We know we have exclusive access to the command buffer because it's &mut
+
+        let clear_values = [vk::ClearValue {
+            color: vk::ClearColorValue {
+                float32: [0.0, 0.0, 0.0, 1.0],
+            },
+        }];
+        let render_pass_begin_info = vk::RenderPassBeginInfo::default()
+            .render_pass(self.r.render_pass.inner)
+            .render_area(vk::Rect2D {
+                offset: vk::Offset2D::default().x(0).y(0),
+                extent: self.r.extent,
+            })
+            .clear_values(&clear_values)
+            .framebuffer(self.r.framebuffers[index as usize]);
+
+        let viewport = vk::Viewport {
+            x: 0.0,
+            y: 0.0,
+            width: self.r.extent.width as f32,
+            height: self.r.extent.height as f32,
+            min_depth: 0.0,
+            max_depth: 0.0,
+        };
+
+        let scissor = vk::Rect2D {
+            offset: vk::Offset2D { x: 0, y: 0 },
+            extent: self.r.extent,
+        };
+
+        //SAFETY: Exclusive access to cb. Valid parameters passed in
+        unsafe {
+            dev.begin_command_buffer(cb, &command_buffer_begin_info)?;
+            dev.cmd_begin_render_pass(cb, &render_pass_begin_info, vk::SubpassContents::INLINE);
+            dev.cmd_bind_pipeline(
+                cb,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.r.graphics_pipeline.inner,
+            );
+            dev.cmd_set_viewport(cb, 0, &[viewport]);
+            dev.cmd_set_scissor(cb, 0, &[scissor]);
+
+            dev.cmd_draw(cb, 3, 1, 0, 0);
+
+            dev.cmd_end_render_pass(cb);
+            dev.end_command_buffer(cb)?;
+        };
+
+        let cbs = [cb];
+
+        let wait_semaphores = [image_available_semaphore];
+        let signal_semaphores = [render_finished_semaphore];
+
+        let submit_info = [vk::SubmitInfo::default()
+            .command_buffers(&cbs)
+            .wait_semaphores(&wait_semaphores)
+            .signal_semaphores(&signal_semaphores)];
+
+        let graphics_queue = self.graphics_queue.inner.get_mut().unwrap();
+
+        //SAFETY: Exclusive access to queue, all objects in submit_info and the
+        //fence is made with dev
+        unsafe { dev.queue_submit(*graphics_queue, &submit_info, in_flight_fence) }?;
+        let swapchains = [self.r.inner];
+        let image_indices = [index];
+        let present_info = vk::PresentInfoKHR::default()
+            .wait_semaphores(&signal_semaphores)
+            .swapchains(&swapchains)
+            .image_indices(&image_indices);
+        let present_queue = self.present_queue.inner.get_mut().unwrap();
+        //SAFETY: Use RWLock to synchronize access to present queue. All passed
+        //stuff is derived from dev
+        unsafe { swapchain_device.queue_present(*present_queue, &present_info) }?;
+
+        Ok(())
+    }
+
+    fn resize(
+        &mut self,
+        pipeline_layout: &PipelineLayout,
+        shader_stages: &ShaderStages,
+        phys_dev: &PhysicalDevice,
+    ) -> VkResult<()> {
+        //SAFETY: old_swapchain is valid or None, lifetimes are tied
+        self.r = unsafe {
+            Replaceable::new(
+                &self.r.swapchain_device,
+                &self.surface,
+                phys_dev,
+                &self.graphics_queue,
+                &self.present_queue,
+                &self.parent,
+                shader_stages,
+                pipeline_layout,
+                Some(&self.r.inner),
+            )
+        }?;
+        Ok(())
+    }
+}
+
+impl Drop for Replaceable {
+    fn drop(&mut self) {
+        let dev = &self.device.inner;
+        let swapchain_device = &self.swapchain_device;
+        //SAFETY: Exclusive access to queues means no more work submitted
+        unsafe { dev.device_wait_idle().unwrap() };
+        //SAFETY: Own these objects and have mutable refs to them
+        unsafe {
+            for framebuffer in self.framebuffers.iter().copied() {
+                dev.destroy_framebuffer(framebuffer, None);
+            }
+            for image in self.image_views.iter() {
+                dev.destroy_image_view(*image, None)
+            }
+            swapchain_device.destroy_swapchain(self.inner, None)
+        }
     }
 }
 
 impl Drop for Swapchain {
     fn drop(&mut self) {
+        let dev = &self.parent.as_ref().inner;
+        //SAFETY: Exclusive access to queues means no more work submitted
+        unsafe { dev.device_wait_idle().unwrap() };
         //SAFETY: These do not escape Swapchain. It owns them wholly
         unsafe {
-            for image in self.image_views.iter() {
-                self.parent.inner.destroy_image_view(*image, None)
+            for sem in self.image_available_semaphores.drain(..) {
+                dev.destroy_semaphore(sem, None);
             }
-            self.device.destroy_swapchain(self.inner, None)
+            for sem in self.render_finished_semaphores.drain(..) {
+                dev.destroy_semaphore(sem, None);
+            }
+            for fence in self.in_flight_fences.drain(..) {
+                dev.destroy_fence(fence, None);
+            }
         };
+    }
+}
+
+struct RenderPass {
+    inner: vk::RenderPass,
+    parent: Arc<Device>,
+}
+
+impl Drop for RenderPass {
+    fn drop(&mut self) {
+        //SAFETY: We own renderpass and it's derived from device
+        unsafe { self.parent.inner.destroy_render_pass(self.inner, None) };
     }
 }
 
@@ -731,13 +1289,13 @@ impl Context {
 
         let mut missing_instance_extensions = Vec::new();
 
-        let phys_devs = instance.enumerate_physical_devices();
+        let mut phys_devs = instance.enumerate_physical_devices();
 
         let (_, phys_dev, qfi) = phys_devs
-            .iter()
+            .drain(..)
             .map(|phys_dev| {
                 let (score, qfp) =
-                    evaluate_phys_dev(phys_dev, &instance, &surface, |extension_list| {
+                    evaluate_phys_dev(&phys_dev, &instance, &surface, |extension_list| {
                         for ext in required_device_extensions {
                             //SAFETY: Lifetime of this cstr is less than
                             //lifetime of ext
@@ -768,7 +1326,7 @@ impl Context {
 
         let dev = Arc::new(
             instance
-                .create_device(phys_dev, &qfi, &required_device_extensions[..])
+                .create_device(&phys_dev, &qfi, &required_device_extensions[..])
                 .map_err(|_| Error::DeviceCreation)?,
         );
 
@@ -776,13 +1334,17 @@ impl Context {
 
         let present_queue = dev.get_device_queue(qfi.present, 0);
 
-        let swapchain = Swapchain::new(
-            dev.clone(),
-            phys_dev,
-            surface.clone(),
-            graphics_queue,
-            present_queue,
-        )?;
+        let command_pool_ci = vk::CommandPoolCreateInfo::default()
+            .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
+            .queue_family_index(graphics_queue.qfi);
+        //SAFETY: Valid CI
+        let command_pool = Arc::new(unsafe { dev.create_command_pool(&command_pool_ci) }.unwrap());
+
+        let pipeline_layout_ci = Default::default();
+
+        let pipeline_layout =
+            //SAFETY: pipeline_layout_ci is valid. Known because we made it
+            unsafe { dev.create_pipeline_layout(&pipeline_layout_ci) }.unwrap();
 
         let shader_compiler = shaderc::Compiler::new().unwrap();
         let vert_shader_spirv = shader_compiler
@@ -805,20 +1367,60 @@ impl Context {
             )
             .unwrap();
 
-        let _vert_shader_mod = dev.create_shader_module(vert_shader_spirv);
-        let _frag_shader_mod = dev.create_shader_module(frag_shader_spirv);
+        let vert_shader_mod = dev.create_shader_module(vert_shader_spirv);
+        let frag_shader_mod = dev.create_shader_module(frag_shader_spirv);
+
+        let shader_stages = ShaderStages {
+            vert: vert_shader_mod,
+            frag: frag_shader_mod,
+        };
+
+        let swapchain = Swapchain::new(
+            dev.clone(),
+            &phys_dev,
+            surface.clone(),
+            graphics_queue,
+            present_queue,
+            command_pool,
+            &pipeline_layout,
+            &shader_stages,
+        )?;
 
         let graphics_context = Context {
             _win: win,
-            _nd: ContextNonDebug {
-                _swapchain: swapchain,
+            nd: ContextNonDebug {
+                swapchain,
                 _entry: entry,
                 _instance: instance,
                 _dev: dev,
                 _surface: surface,
+                pipeline_layout,
+                shader_stages,
+
+                phys_dev,
             },
         };
         Ok(graphics_context)
+    }
+    pub fn resize(&mut self) {
+        self.nd
+            .swapchain
+            .resize(
+                &self.nd.pipeline_layout,
+                &self.nd.shader_stages,
+                &self.nd.phys_dev,
+            )
+            .unwrap();
+    }
+    pub fn draw(&mut self) {
+        match self.nd.swapchain.draw() {
+            Ok(_) => {}
+            Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => self.resize(),
+            Err(vk::Result::SUBOPTIMAL_KHR) => self.resize(),
+            Err(err) => {
+                panic!("Result error on draw {}", err);
+            }
+        };
     }
 }
 
@@ -890,7 +1492,8 @@ impl QueueFamilyIndicesOpt {
                     .enumerate()
                     .map(|(i, _)| i as u32)
                     .find(|queue_family_index| {
-                        //SAFETY: queue_family_index will always be in bounds due to enumerate
+                        //SAFETY: queue_family_index will always be in bounds
+                        //due to enumerate
 
                         surface.get_physical_device_surface_support(phys_dev, *queue_family_index)
                     })
