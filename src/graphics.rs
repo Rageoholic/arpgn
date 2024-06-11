@@ -27,7 +27,7 @@ const MAX_FRAMES_IN_FLIGHT: usize = 2;
 struct ContextNonDebug {
     _entry: Arc<Entry>,
     _instance: Arc<Instance>,
-    swapchain: Swapchain,
+    swapchain: RenderData,
     _dev: Arc<Device>,
     _surface: Arc<Surface>,
     pipeline_layout: PipelineLayout,
@@ -748,247 +748,253 @@ impl Replaceable {
         pipeline_layout: &PipelineLayout,
         old_swapchain: Option<&vk::SwapchainKHR>,
     ) -> VkResult<Self> {
-        let swapchain_formats = { surface.get_physical_device_surface_formats(phys_dev) }.unwrap();
-
-        let swapchain_present_modes = surface.get_physical_device_surface_present_modes(phys_dev);
-
-        let swapchain_capabilities = surface.get_physical_device_surface_capabilities(phys_dev);
-
-        let swapchain_format = swapchain_formats
-            .iter()
-            .find(|format| {
-                format.format == vk::Format::B8G8R8A8_SRGB
-                    && format.color_space == vk::ColorSpaceKHR::SRGB_NONLINEAR
-            })
-            .copied()
-            .or_else(|| swapchain_formats.iter().copied().next())
-            .unwrap();
-
-        let swapchain_present_mode = swapchain_present_modes
-            .iter()
-            .copied()
-            .find(|present_mode| *present_mode == vk::PresentModeKHR::MAILBOX)
-            .or_else(|| {
-                swapchain_present_modes
-                    .iter()
-                    .copied()
-                    .find(|present_mode| *present_mode == vk::PresentModeKHR::IMMEDIATE)
-            })
-            .unwrap_or(vk::PresentModeKHR::FIFO);
-
         let win_size = surface.parent_window.inner_size();
-        let swap_extent = vk::Extent2D {
-            width: win_size.width.clamp(
-                swapchain_capabilities.min_image_extent.width,
-                swapchain_capabilities.max_image_extent.width,
-            ),
-            height: win_size.height.clamp(
-                swapchain_capabilities.min_image_extent.height,
-                swapchain_capabilities.max_image_extent.height,
-            ),
-        };
+        if win_size.width != 0 && win_size.height != 0 {
+            let swapchain_formats =
+                { surface.get_physical_device_surface_formats(phys_dev) }.unwrap();
 
-        let swap_image_count = (swapchain_capabilities.min_image_count + 1)
-            .min(swapchain_capabilities.max_image_count);
+            let swapchain_present_modes =
+                surface.get_physical_device_surface_present_modes(phys_dev);
 
-        let qfi_if_needed = [graphics_queue.qfi, present_queue.qfi];
+            let swapchain_capabilities = surface.get_physical_device_surface_capabilities(phys_dev);
 
-        let shared_graphics_present_queue = graphics_queue.qfi == present_queue.qfi;
+            let swapchain_format = swapchain_formats
+                .iter()
+                .find(|format| {
+                    format.format == vk::Format::B8G8R8A8_SRGB
+                        && format.color_space == vk::ColorSpaceKHR::SRGB_NONLINEAR
+                })
+                .copied()
+                .or_else(|| swapchain_formats.iter().copied().next())
+                .unwrap();
 
-        //create_swapchain_KHR requires external sync on the surface
-        let surface_mut = surface.inner.write().unwrap();
+            let swapchain_present_mode = swapchain_present_modes
+                .iter()
+                .copied()
+                .find(|present_mode| *present_mode == vk::PresentModeKHR::MAILBOX)
+                .or_else(|| {
+                    swapchain_present_modes
+                        .iter()
+                        .copied()
+                        .find(|present_mode| *present_mode == vk::PresentModeKHR::IMMEDIATE)
+                })
+                .unwrap_or(vk::PresentModeKHR::FIFO);
 
-        let swapchain_ci = vk::SwapchainCreateInfoKHR {
-            surface: *surface_mut,
-            min_image_count: swap_image_count,
-            image_format: swapchain_format.format,
-            image_color_space: swapchain_format.color_space,
-            image_extent: swap_extent,
-            image_array_layers: 1,
-            image_usage: vk::ImageUsageFlags::COLOR_ATTACHMENT,
-            image_sharing_mode: if shared_graphics_present_queue {
-                vk::SharingMode::EXCLUSIVE
-            } else {
-                vk::SharingMode::CONCURRENT
-            },
-            queue_family_index_count: if shared_graphics_present_queue { 0 } else { 2 },
-            p_queue_family_indices: if shared_graphics_present_queue {
-                null()
-            } else {
-                qfi_if_needed.as_ptr()
-            },
-            pre_transform: swapchain_capabilities.current_transform,
-            composite_alpha: vk::CompositeAlphaFlagsKHR::OPAQUE,
-            present_mode: swapchain_present_mode,
-            clipped: vk::TRUE,
-            old_swapchain: old_swapchain.copied().unwrap_or(vk::SwapchainKHR::null()),
-            ..Default::default()
-        };
-        //SAFETY: Allocation callbacks must be valid, swapchain_ci must be
-        //valid, swapchain must be destroyed before surface
-        let swapchain = unsafe { swapchain_device.create_swapchain(&swapchain_ci, None) }?;
+            let swap_extent = vk::Extent2D {
+                width: win_size.width.clamp(
+                    swapchain_capabilities.min_image_extent.width,
+                    swapchain_capabilities.max_image_extent.width,
+                ),
+                height: win_size.height.clamp(
+                    swapchain_capabilities.min_image_extent.height,
+                    swapchain_capabilities.max_image_extent.height,
+                ),
+            };
 
-        //SAFETY: Images are implicitly destroyed with the swapchain, tied together via Drop
-        let images = unsafe { swapchain_device.get_swapchain_images(swapchain) }.unwrap();
-        let image_views: Vec<_> = images
-            .iter()
-            .map(|image| {
-                let ivci = vk::ImageViewCreateInfo::default()
-                    .image(*image)
-                    .view_type(vk::ImageViewType::TYPE_2D)
-                    .format(swapchain_format.format)
-                    .subresource_range(
-                        vk::ImageSubresourceRange::default()
-                            .aspect_mask(vk::ImageAspectFlags::COLOR)
-                            .base_mip_level(0)
-                            .level_count(1)
-                            .base_array_layer(0)
-                            .layer_count(1),
-                    );
-                //SAFETY: Image view is destroyed before Image
-                unsafe { device.inner.create_image_view(&ivci, None) }.unwrap()
-            })
-            .collect();
+            let swap_image_count = (swapchain_capabilities.min_image_count + 1)
+                .min(swapchain_capabilities.max_image_count);
 
-        let color_attachment_refs = [vk::AttachmentReference::default()
-            .attachment(0)
-            .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)];
+            let qfi_if_needed = [graphics_queue.qfi, present_queue.qfi];
 
-        let multisampling = vk::PipelineMultisampleStateCreateInfo::default()
-            .sample_shading_enable(false)
-            .rasterization_samples(vk::SampleCountFlags::TYPE_1);
+            let shared_graphics_present_queue = graphics_queue.qfi == present_queue.qfi;
 
-        let color_attachments = [vk::AttachmentDescription::default()
-            .format(swapchain_ci.image_format)
-            .samples(multisampling.rasterization_samples)
-            .load_op(vk::AttachmentLoadOp::CLEAR)
-            .store_op(vk::AttachmentStoreOp::STORE)
-            .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
-            .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
-            .initial_layout(vk::ImageLayout::UNDEFINED)
-            .final_layout(vk::ImageLayout::PRESENT_SRC_KHR)];
+            //create_swapchain_KHR requires external sync on the surface
+            let surface_mut = surface.inner.write().unwrap();
 
-        let subpasses = [vk::SubpassDescription::default()
-            .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
-            .color_attachments(&color_attachment_refs)];
+            let swapchain_ci = vk::SwapchainCreateInfoKHR {
+                surface: *surface_mut,
+                min_image_count: swap_image_count,
+                image_format: swapchain_format.format,
+                image_color_space: swapchain_format.color_space,
+                image_extent: swap_extent,
+                image_array_layers: 1,
+                image_usage: vk::ImageUsageFlags::COLOR_ATTACHMENT,
+                image_sharing_mode: if shared_graphics_present_queue {
+                    vk::SharingMode::EXCLUSIVE
+                } else {
+                    vk::SharingMode::CONCURRENT
+                },
+                queue_family_index_count: if shared_graphics_present_queue { 0 } else { 2 },
+                p_queue_family_indices: if shared_graphics_present_queue {
+                    null()
+                } else {
+                    qfi_if_needed.as_ptr()
+                },
+                pre_transform: swapchain_capabilities.current_transform,
+                composite_alpha: vk::CompositeAlphaFlagsKHR::OPAQUE,
+                present_mode: swapchain_present_mode,
+                clipped: vk::TRUE,
+                old_swapchain: old_swapchain.copied().unwrap_or(vk::SwapchainKHR::null()),
+                ..Default::default()
+            };
+            //SAFETY: Allocation callbacks must be valid, swapchain_ci must be
+            //valid, swapchain must be destroyed before surface
+            let swapchain = unsafe { swapchain_device.create_swapchain(&swapchain_ci, None) }?;
 
-        let dependencies = [vk::SubpassDependency {
-            src_subpass: vk::SUBPASS_EXTERNAL,
-            dst_subpass: 0,
-            src_stage_mask: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-            dst_stage_mask: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-            src_access_mask: vk::AccessFlags::empty(),
-            dst_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
-            dependency_flags: Default::default(),
-        }];
+            //SAFETY: Images are implicitly destroyed with the swapchain, tied together via Drop
+            let images = unsafe { swapchain_device.get_swapchain_images(swapchain) }.unwrap();
+            let image_views: Vec<_> = images
+                .iter()
+                .map(|image| {
+                    let ivci = vk::ImageViewCreateInfo::default()
+                        .image(*image)
+                        .view_type(vk::ImageViewType::TYPE_2D)
+                        .format(swapchain_format.format)
+                        .subresource_range(
+                            vk::ImageSubresourceRange::default()
+                                .aspect_mask(vk::ImageAspectFlags::COLOR)
+                                .base_mip_level(0)
+                                .level_count(1)
+                                .base_array_layer(0)
+                                .layer_count(1),
+                        );
+                    //SAFETY: Image view is destroyed before Image
+                    unsafe { device.inner.create_image_view(&ivci, None) }.unwrap()
+                })
+                .collect();
 
-        let render_pass_ci = vk::RenderPassCreateInfo::default()
-            .attachments(&color_attachments)
-            .subpasses(&subpasses)
-            .dependencies(&dependencies);
+            let color_attachment_refs = [vk::AttachmentReference::default()
+                .attachment(0)
+                .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)];
 
-        let pipeline_input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
-            .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
-            .primitive_restart_enable(false);
-        let viewports = [vk::Viewport::default()
-            .width(swap_extent.width as f32)
-            .height(swap_extent.height as f32)];
-        let scissors = [vk::Rect2D {
-            offset: vk::Offset2D { x: 0, y: 0 },
-            extent: swap_extent,
-        }];
+            let multisampling = vk::PipelineMultisampleStateCreateInfo::default()
+                .sample_shading_enable(false)
+                .rasterization_samples(vk::SampleCountFlags::TYPE_1);
 
-        let viewport_state = vk::PipelineViewportStateCreateInfo::default()
-            .viewports(&viewports)
-            .scissors(&scissors);
+            let color_attachments = [vk::AttachmentDescription::default()
+                .format(swapchain_ci.image_format)
+                .samples(multisampling.rasterization_samples)
+                .load_op(vk::AttachmentLoadOp::CLEAR)
+                .store_op(vk::AttachmentStoreOp::STORE)
+                .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
+                .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
+                .initial_layout(vk::ImageLayout::UNDEFINED)
+                .final_layout(vk::ImageLayout::PRESENT_SRC_KHR)];
 
-        let rasterizer = vk::PipelineRasterizationStateCreateInfo::default()
-            .depth_clamp_enable(false)
-            .rasterizer_discard_enable(false)
-            .polygon_mode(vk::PolygonMode::FILL)
-            .line_width(1.0)
-            .cull_mode(vk::CullModeFlags::BACK)
-            .front_face(vk::FrontFace::CLOCKWISE)
-            .depth_bias_enable(false);
+            let subpasses = [vk::SubpassDescription::default()
+                .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
+                .color_attachments(&color_attachment_refs)];
 
-        let color_blend_attachments = [vk::PipelineColorBlendAttachmentState::default()
-            .color_write_mask(vk::ColorComponentFlags::RGBA)
-            .blend_enable(false)];
+            let dependencies = [vk::SubpassDependency {
+                src_subpass: vk::SUBPASS_EXTERNAL,
+                dst_subpass: 0,
+                src_stage_mask: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                dst_stage_mask: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                src_access_mask: vk::AccessFlags::empty(),
+                dst_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+                dependency_flags: Default::default(),
+            }];
 
-        let color_blending = vk::PipelineColorBlendStateCreateInfo::default()
-            .logic_op_enable(false)
-            .attachments(&color_blend_attachments);
+            let render_pass_ci = vk::RenderPassCreateInfo::default()
+                .attachments(&color_attachments)
+                .subpasses(&subpasses)
+                .dependencies(&dependencies);
 
-        //SAFETY: lifetimes are tied here
-        let shader_stages_cis = unsafe { shader_stages.to_array() };
+            let pipeline_input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
+                .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
+                .primitive_restart_enable(false);
+            let viewports = [vk::Viewport::default()
+                .width(swap_extent.width as f32)
+                .height(swap_extent.height as f32)];
+            let scissors = [vk::Rect2D {
+                offset: vk::Offset2D { x: 0, y: 0 },
+                extent: swap_extent,
+            }];
 
-        let pipeline_vertex_input = vk::PipelineVertexInputStateCreateInfo::default()
-            .vertex_binding_descriptions(&[])
-            .vertex_attribute_descriptions(&[]);
+            let viewport_state = vk::PipelineViewportStateCreateInfo::default()
+                .viewports(&viewports)
+                .scissors(&scissors);
 
-        let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
-        let pipeline_dynamic_state =
-            vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
+            let rasterizer = vk::PipelineRasterizationStateCreateInfo::default()
+                .depth_clamp_enable(false)
+                .rasterizer_discard_enable(false)
+                .polygon_mode(vk::PolygonMode::FILL)
+                .line_width(1.0)
+                .cull_mode(vk::CullModeFlags::BACK)
+                .front_face(vk::FrontFace::CLOCKWISE)
+                .depth_bias_enable(false);
 
-        let render_pass =
+            let color_blend_attachments = [vk::PipelineColorBlendAttachmentState::default()
+                .color_write_mask(vk::ColorComponentFlags::RGBA)
+                .blend_enable(false)];
+
+            let color_blending = vk::PipelineColorBlendStateCreateInfo::default()
+                .logic_op_enable(false)
+                .attachments(&color_blend_attachments);
+
+            //SAFETY: lifetimes are tied here
+            let shader_stages_cis = unsafe { shader_stages.to_array() };
+
+            let pipeline_vertex_input = vk::PipelineVertexInputStateCreateInfo::default()
+                .vertex_binding_descriptions(&[])
+                .vertex_attribute_descriptions(&[]);
+
+            let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
+            let pipeline_dynamic_state =
+                vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
+
+            let render_pass =
             //SAFETY: render_pass_ci must be valid, we create it
              unsafe { device.create_render_pass(&render_pass_ci) }.unwrap();
-        let framebuffers: Vec<_> = image_views
-            .iter()
-            .map(|iv| {
-                let attachments = [*iv];
-                let framebuffer_ci = vk::FramebufferCreateInfo::default()
-                    .render_pass(render_pass.inner)
-                    .layers(1)
-                    .attachments(&attachments)
-                    .width(swap_extent.width)
-                    .height(swap_extent.height);
+            let framebuffers: Vec<_> = image_views
+                .iter()
+                .map(|iv| {
+                    let attachments = [*iv];
+                    let framebuffer_ci = vk::FramebufferCreateInfo::default()
+                        .render_pass(render_pass.inner)
+                        .layers(1)
+                        .attachments(&attachments)
+                        .width(swap_extent.width)
+                        .height(swap_extent.height);
 
-                //SAFETY: valid ci
-                unsafe {
-                    device
-                        .inner
-                        .create_framebuffer(&framebuffer_ci, None)
-                        .unwrap()
-                }
-            })
-            .collect();
+                    //SAFETY: valid ci
+                    unsafe {
+                        device
+                            .inner
+                            .create_framebuffer(&framebuffer_ci, None)
+                            .unwrap()
+                    }
+                })
+                .collect();
 
-        let graphics_pipeline_ci = vk::GraphicsPipelineCreateInfo::default()
-            .stages(&shader_stages_cis)
-            .layout(pipeline_layout.inner)
-            .vertex_input_state(&pipeline_vertex_input)
-            .input_assembly_state(&pipeline_input_assembly)
-            .viewport_state(&viewport_state)
-            .rasterization_state(&rasterizer)
-            .multisample_state(&multisampling)
-            .color_blend_state(&color_blending)
-            .dynamic_state(&pipeline_dynamic_state)
-            .layout(pipeline_layout.inner)
-            .render_pass(render_pass.inner)
-            .subpass(0);
+            let graphics_pipeline_ci = vk::GraphicsPipelineCreateInfo::default()
+                .stages(&shader_stages_cis)
+                .layout(pipeline_layout.inner)
+                .vertex_input_state(&pipeline_vertex_input)
+                .input_assembly_state(&pipeline_input_assembly)
+                .viewport_state(&viewport_state)
+                .rasterization_state(&rasterizer)
+                .multisample_state(&multisampling)
+                .color_blend_state(&color_blending)
+                .dynamic_state(&pipeline_dynamic_state)
+                .layout(pipeline_layout.inner)
+                .render_pass(render_pass.inner)
+                .subpass(0);
 
-        let graphics_pipeline =
+            let graphics_pipeline =
             //SAFETY: CI must be valid
             unsafe { device.create_graphics_pipelines(&[graphics_pipeline_ci]) }
                 .unwrap()
                 .pop()
                 .unwrap();
 
-        Ok(Self {
-            extent: swap_extent,
-            image_views,
-            inner: swapchain,
-            framebuffers,
-            render_pass,
-            graphics_pipeline,
-            device: device.clone(),
-            swapchain_device: swapchain_device.clone(),
-        })
+            Ok(Self {
+                extent: swap_extent,
+                image_views,
+                inner: swapchain,
+                framebuffers,
+                render_pass,
+                graphics_pipeline,
+                device: device.clone(),
+                swapchain_device: swapchain_device.clone(),
+            })
+        } else {
+            Err(vk::Result::SUCCESS)
+        }
     }
 }
 
-struct Swapchain {
+struct RenderData {
     parent: Arc<Device>,
     graphics_queue: Queue,
     present_queue: Queue,
@@ -998,11 +1004,11 @@ struct Swapchain {
     in_flight_fences: Vec<vk::Fence>,
     frame: usize,
     surface: Arc<Surface>,
-
-    r: Replaceable,
+    swapchain_device: Arc<swapchain::Device>,
+    r: Option<Replaceable>,
 }
 
-impl Swapchain {
+impl RenderData {
     //TODO: Clean this up
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -1060,8 +1066,8 @@ impl Swapchain {
             .map_err(|_| Error::SwapchainCreation)
         }?;
 
-        Ok(Swapchain {
-            r,
+        Ok(RenderData {
+            r: Some(r),
             parent: device.clone(),
             graphics_queue,
             present_queue,
@@ -1072,6 +1078,7 @@ impl Swapchain {
             in_flight_fences,
             surface: surface.clone(),
             frame: 0,
+            swapchain_device,
         })
     }
 
@@ -1079,110 +1086,113 @@ impl Swapchain {
         let sync_index = self.frame;
         self.frame = (self.frame + 1) % MAX_FRAMES_IN_FLIGHT;
         let dev = self.parent.get_inner();
-        let swapchain_device = &self.r.swapchain_device;
+        let swapchain_device = &mut self.swapchain_device;
+        if let Some(r) = &mut self.r {
+            let in_flight_fence = self.in_flight_fences[sync_index];
+            let fences = [in_flight_fence];
+            let image_available_semaphore = self.image_available_semaphores[sync_index];
+            let render_finished_semaphore = self.render_finished_semaphores[sync_index];
+            //SAFETY: fences are valid and from device
+            let index = unsafe {
+                dev.wait_for_fences(&fences, true, u64::MAX)?;
+                dev.reset_fences(&fences)?;
 
-        let in_flight_fence = self.in_flight_fences[sync_index];
-        let fences = [in_flight_fence];
-        let image_available_semaphore = self.image_available_semaphores[sync_index];
-        let render_finished_semaphore = self.render_finished_semaphores[sync_index];
-        //SAFETY: fences are valid and from device
-        let index = unsafe {
-            dev.wait_for_fences(&fences, true, u64::MAX)?;
-            dev.reset_fences(&fences)?;
+                let index = swapchain_device
+                    .acquire_next_image(
+                        r.inner,
+                        u64::MAX,
+                        image_available_semaphore,
+                        vk::Fence::null(),
+                    )?
+                    .0;
+                dev.reset_fences(&fences)?;
+                index
+            };
+            let cb = self.command_buffers[sync_index].inner;
 
-            let index = swapchain_device
-                .acquire_next_image(
-                    self.r.inner,
-                    u64::MAX,
-                    image_available_semaphore,
-                    vk::Fence::null(),
-                )?
-                .0;
-            dev.reset_fences(&fences)?;
-            index
-        };
-        let cb = self.command_buffers[sync_index].inner;
+            //SAFETY: command buffer comes from dev. Is not in use.
+            unsafe { dev.reset_command_buffer(cb, vk::CommandBufferResetFlags::empty())? };
+            let dev = self.parent.get_inner();
+            let command_buffer_begin_info = vk::CommandBufferBeginInfo::default();
 
-        //SAFETY: command buffer comes from dev. Is not in use.
-        unsafe { dev.reset_command_buffer(cb, vk::CommandBufferResetFlags::empty())? };
-        let dev = self.parent.get_inner();
-        let command_buffer_begin_info = vk::CommandBufferBeginInfo::default();
+            //SAFETY: We know we have exclusive access to the command buffer because it's &mut
 
-        //SAFETY: We know we have exclusive access to the command buffer because it's &mut
+            let clear_values = [vk::ClearValue {
+                color: vk::ClearColorValue {
+                    float32: [0.0, 0.0, 0.0, 1.0],
+                },
+            }];
+            let render_pass_begin_info = vk::RenderPassBeginInfo::default()
+                .render_pass(r.render_pass.inner)
+                .render_area(vk::Rect2D {
+                    offset: vk::Offset2D::default().x(0).y(0),
+                    extent: r.extent,
+                })
+                .clear_values(&clear_values)
+                .framebuffer(r.framebuffers[index as usize]);
 
-        let clear_values = [vk::ClearValue {
-            color: vk::ClearColorValue {
-                float32: [0.0, 0.0, 0.0, 1.0],
-            },
-        }];
-        let render_pass_begin_info = vk::RenderPassBeginInfo::default()
-            .render_pass(self.r.render_pass.inner)
-            .render_area(vk::Rect2D {
-                offset: vk::Offset2D::default().x(0).y(0),
-                extent: self.r.extent,
-            })
-            .clear_values(&clear_values)
-            .framebuffer(self.r.framebuffers[index as usize]);
+            let viewport = vk::Viewport {
+                x: 0.0,
+                y: 0.0,
+                width: r.extent.width as f32,
+                height: r.extent.height as f32,
+                min_depth: 0.0,
+                max_depth: 0.0,
+            };
 
-        let viewport = vk::Viewport {
-            x: 0.0,
-            y: 0.0,
-            width: self.r.extent.width as f32,
-            height: self.r.extent.height as f32,
-            min_depth: 0.0,
-            max_depth: 0.0,
-        };
+            let scissor = vk::Rect2D {
+                offset: vk::Offset2D { x: 0, y: 0 },
+                extent: r.extent,
+            };
 
-        let scissor = vk::Rect2D {
-            offset: vk::Offset2D { x: 0, y: 0 },
-            extent: self.r.extent,
-        };
+            //SAFETY: Exclusive access to cb. Valid parameters passed in
+            unsafe {
+                dev.begin_command_buffer(cb, &command_buffer_begin_info)?;
+                dev.cmd_begin_render_pass(cb, &render_pass_begin_info, vk::SubpassContents::INLINE);
+                dev.cmd_bind_pipeline(
+                    cb,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    r.graphics_pipeline.inner,
+                );
+                dev.cmd_set_viewport(cb, 0, &[viewport]);
+                dev.cmd_set_scissor(cb, 0, &[scissor]);
 
-        //SAFETY: Exclusive access to cb. Valid parameters passed in
-        unsafe {
-            dev.begin_command_buffer(cb, &command_buffer_begin_info)?;
-            dev.cmd_begin_render_pass(cb, &render_pass_begin_info, vk::SubpassContents::INLINE);
-            dev.cmd_bind_pipeline(
-                cb,
-                vk::PipelineBindPoint::GRAPHICS,
-                self.r.graphics_pipeline.inner,
-            );
-            dev.cmd_set_viewport(cb, 0, &[viewport]);
-            dev.cmd_set_scissor(cb, 0, &[scissor]);
+                dev.cmd_draw(cb, 3, 1, 0, 0);
 
-            dev.cmd_draw(cb, 3, 1, 0, 0);
+                dev.cmd_end_render_pass(cb);
+                dev.end_command_buffer(cb)?;
+            };
 
-            dev.cmd_end_render_pass(cb);
-            dev.end_command_buffer(cb)?;
-        };
+            let cbs = [cb];
 
-        let cbs = [cb];
+            let wait_semaphores = [image_available_semaphore];
+            let signal_semaphores = [render_finished_semaphore];
 
-        let wait_semaphores = [image_available_semaphore];
-        let signal_semaphores = [render_finished_semaphore];
+            let submit_info = [vk::SubmitInfo::default()
+                .command_buffers(&cbs)
+                .wait_semaphores(&wait_semaphores)
+                .signal_semaphores(&signal_semaphores)];
 
-        let submit_info = [vk::SubmitInfo::default()
-            .command_buffers(&cbs)
-            .wait_semaphores(&wait_semaphores)
-            .signal_semaphores(&signal_semaphores)];
+            let graphics_queue = self.graphics_queue.inner.get_mut().unwrap();
 
-        let graphics_queue = self.graphics_queue.inner.get_mut().unwrap();
+            //SAFETY: Exclusive access to queue, all objects in submit_info and the
+            //fence is made with dev
+            unsafe { dev.queue_submit(*graphics_queue, &submit_info, in_flight_fence) }?;
+            let swapchains = [r.inner];
+            let image_indices = [index];
+            let present_info = vk::PresentInfoKHR::default()
+                .wait_semaphores(&signal_semaphores)
+                .swapchains(&swapchains)
+                .image_indices(&image_indices);
+            let present_queue = self.present_queue.inner.get_mut().unwrap();
+            //SAFETY: Use RWLock to synchronize access to present queue. All passed
+            //stuff is derived from dev
+            unsafe { swapchain_device.queue_present(*present_queue, &present_info) }?;
 
-        //SAFETY: Exclusive access to queue, all objects in submit_info and the
-        //fence is made with dev
-        unsafe { dev.queue_submit(*graphics_queue, &submit_info, in_flight_fence) }?;
-        let swapchains = [self.r.inner];
-        let image_indices = [index];
-        let present_info = vk::PresentInfoKHR::default()
-            .wait_semaphores(&signal_semaphores)
-            .swapchains(&swapchains)
-            .image_indices(&image_indices);
-        let present_queue = self.present_queue.inner.get_mut().unwrap();
-        //SAFETY: Use RWLock to synchronize access to present queue. All passed
-        //stuff is derived from dev
-        unsafe { swapchain_device.queue_present(*present_queue, &present_info) }?;
-
-        Ok(())
+            Ok(())
+        } else {
+            Ok(())
+        }
     }
 
     fn resize(
@@ -1191,10 +1201,15 @@ impl Swapchain {
         shader_stages: &ShaderStages,
         phys_dev: &PhysicalDevice,
     ) -> VkResult<()> {
+        if self.r.is_none() {
+            //SAFETY: Pretty much always safe
+            unsafe { self.parent.inner.device_wait_idle()? };
+        }
+
         //SAFETY: old_swapchain is valid or None, lifetimes are tied
-        self.r = unsafe {
+        self.r = match unsafe {
             Replaceable::new(
-                &self.r.swapchain_device,
+                &self.swapchain_device,
                 &self.surface,
                 phys_dev,
                 &self.graphics_queue,
@@ -1202,8 +1217,12 @@ impl Swapchain {
                 &self.parent,
                 shader_stages,
                 pipeline_layout,
-                Some(&self.r.inner),
+                self.r.as_ref().map(|r| &r.inner),
             )
+        } {
+            Ok(r) => Ok(Some(r)),
+            Err(vk::Result::SUCCESS) => Ok(None),
+            Err(res) => Err(res),
         }?;
         Ok(())
     }
@@ -1228,7 +1247,7 @@ impl Drop for Replaceable {
     }
 }
 
-impl Drop for Swapchain {
+impl Drop for RenderData {
     fn drop(&mut self) {
         let dev = &self.parent.as_ref().inner;
         //SAFETY: Exclusive access to queues means no more work submitted
@@ -1375,7 +1394,7 @@ impl Context {
             frag: frag_shader_mod,
         };
 
-        let swapchain = Swapchain::new(
+        let swapchain = RenderData::new(
             dev.clone(),
             &phys_dev,
             surface.clone(),

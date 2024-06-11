@@ -36,6 +36,7 @@ fn main() {
         .run(move |event, loop_target| match output_opt {
             None => match event {
                 Event::NewEvents(StartCause::Init) => {
+                    loop_target.set_control_flow(winit::event_loop::ControlFlow::Poll);
                     output_opt = {
                         let win = WindowBuilder::new()
                             .with_visible(false)
@@ -73,6 +74,7 @@ fn main() {
                         output_opt = None;
                         loop_target.exit()
                     }
+                    WindowEvent::Resized(_) => context.resize(),
                     _ => {}
                 },
                 Event::AboutToWait => context.draw(),
