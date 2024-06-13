@@ -2,6 +2,8 @@ use std::{
     collections::HashSet,
     ffi::{CStr, CString},
     fmt::Debug,
+    marker::PhantomData,
+    mem::{size_of, ManuallyDrop},
     os::raw::c_void,
     ptr::null,
     sync::{Arc, RwLock},
@@ -17,17 +19,59 @@ use ash::{
 
 use structopt::StructOpt;
 use strum::EnumString;
+use vek::{Vec2, Vec3};
+use vk_mem::Alloc;
 use winit::{
     raw_window_handle::{HasDisplayHandle, HasWindowHandle},
     window::Window,
 };
+
+#[derive(Debug, Clone, Copy, bytemuck::Zeroable, bytemuck::Pod)]
+#[repr(C)]
+struct Vertex {
+    pos: Vec2<f32>,
+    col: Vec3<f32>,
+}
+
+const VERTICES: [Vertex; 3] = [
+    Vertex::new(Vec2::new(0.0, -0.5), Vec3::new(1.0, 0.0, 0.0)),
+    Vertex::new(Vec2::new(0.5, 0.5), Vec3::new(0.0, 1.0, 0.0)),
+    Vertex::new(Vec2::new(-0.5, 0.5), Vec3::new(0.0, 0.0, 1.0)),
+];
+
+impl Vertex {
+    const fn new(pos: Vec2<f32>, col: Vec3<f32>) -> Self {
+        Self { pos, col }
+    }
+
+    fn binding_description() -> vk::VertexInputBindingDescription {
+        vk::VertexInputBindingDescription::default()
+            .binding(0)
+            .stride(std::mem::size_of::<Self>() as u32)
+            .input_rate(vk::VertexInputRate::VERTEX)
+    }
+
+    fn attribute_description() -> [vk::VertexInputAttributeDescription; 2] {
+        let pos = vk::VertexInputAttributeDescription::default()
+            .binding(0)
+            .location(0)
+            .format(vk::Format::R32G32_SFLOAT)
+            .offset(std::mem::offset_of!(Self, pos) as u32);
+        let col = vk::VertexInputAttributeDescription::default()
+            .binding(0)
+            .location(1)
+            .format(vk::Format::R32G32B32_SFLOAT)
+            .offset(std::mem::offset_of!(Self, col) as u32);
+        [pos, col]
+    }
+}
 
 const MAX_FRAMES_IN_FLIGHT: usize = 2;
 
 struct ContextNonDebug {
     _entry: Arc<Entry>,
     _instance: Arc<Instance>,
-    swapchain: RenderData,
+    render_data: RenderData,
     _dev: Arc<Device>,
     _surface: Arc<Surface>,
     pipeline_layout: PipelineLayout,
@@ -161,6 +205,7 @@ struct Queue {
 struct Device {
     inner: ash::Device,
     parent: Arc<Instance>,
+    allocator: ManuallyDrop<vk_mem::Allocator>,
 }
 
 struct GraphicsPipeline {
@@ -336,8 +381,11 @@ impl ShaderStages {
 impl Drop for Device {
     fn drop(&mut self) {
         //SAFETY: Last use of device. All other references should have been
-        //dropped
-        unsafe { self.inner.destroy_device(None) };
+        //dropped. Last use of self.allocator
+        unsafe {
+            ManuallyDrop::drop(&mut self.allocator);
+            self.inner.destroy_device(None);
+        }
     }
 }
 
@@ -570,9 +618,20 @@ impl Instance {
         unsafe {
             self.inner
                 .create_device(phys_dev.inner, &dev_ci, None)
-                .map(|d| Device {
-                    inner: d,
-                    parent: self.clone(),
+                .map(|d| {
+                    let allocator = ManuallyDrop::new(
+                        vk_mem::Allocator::new(vk_mem::AllocatorCreateInfo::new(
+                            &self.inner,
+                            &d,
+                            phys_dev.inner,
+                        ))
+                        .unwrap(),
+                    );
+                    Device {
+                        inner: d,
+                        parent: self.clone(),
+                        allocator,
+                    }
                 })
                 .map_err(|_| Error::DeviceCreation)
         }
@@ -925,9 +984,12 @@ impl Replaceable {
             //SAFETY: lifetimes are tied here
             let shader_stages_cis = unsafe { shader_stages.to_array() };
 
+            let vertex_binding_descriptions = [Vertex::binding_description()];
+            let vertex_attrribute_descriptions = Vertex::attribute_description();
+
             let pipeline_vertex_input = vk::PipelineVertexInputStateCreateInfo::default()
-                .vertex_binding_descriptions(&[])
-                .vertex_attribute_descriptions(&[]);
+                .vertex_binding_descriptions(&vertex_binding_descriptions[..])
+                .vertex_attribute_descriptions(&vertex_attrribute_descriptions[..]);
 
             let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
             let pipeline_dynamic_state =
@@ -994,6 +1056,26 @@ impl Replaceable {
     }
 }
 
+struct Buffer<T> {
+    inner: vk::Buffer,
+    parent: Arc<Device>,
+    allocation: vk_mem::Allocation,
+    _size: u64,
+    _phantom: PhantomData<T>,
+}
+
+impl<T> Drop for Buffer<T> {
+    fn drop(&mut self) {
+        //SAFETY: Allocator allocated this buffer. Buffer and allocation are
+        //correctly tied together
+        unsafe {
+            self.parent
+                .allocator
+                .destroy_buffer(self.inner, &mut self.allocation)
+        };
+    }
+}
+
 struct RenderData {
     parent: Arc<Device>,
     graphics_queue: Queue,
@@ -1002,6 +1084,7 @@ struct RenderData {
     image_available_semaphores: Vec<vk::Semaphore>,
     render_finished_semaphores: Vec<vk::Semaphore>,
     in_flight_fences: Vec<vk::Fence>,
+    main_vertex_buffers: Vec<Buffer<Vertex>>,
     frame: usize,
     surface: Arc<Surface>,
     swapchain_device: Arc<swapchain::Device>,
@@ -1050,6 +1133,45 @@ impl RenderData {
             .create_command_buffers(MAX_FRAMES_IN_FLIGHT as u32)
             .map_err(|_| Error::CommandBufferCreation)?;
 
+        let vertex_buffer_create_info = vk::BufferCreateInfo::default()
+            .size(size_of::<Vertex>() as u64 * 3)
+            .usage(vk::BufferUsageFlags::VERTEX_BUFFER);
+        let vertex_allocation_info = vk_mem::AllocationCreateInfo {
+            required_flags: vk::MemoryPropertyFlags::HOST_VISIBLE
+                | vk::MemoryPropertyFlags::HOST_COHERENT,
+            ..Default::default()
+        };
+
+        let mut main_vertex_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
+        for _ in 0..MAX_FRAMES_IN_FLIGHT {
+            //SAFETY: Valid buffer create info and allocation infos
+            let (buffer, mut allocation) = unsafe {
+                device
+                    .allocator
+                    .create_buffer(&vertex_buffer_create_info, &vertex_allocation_info)
+            }
+            .unwrap();
+            //SAFETY: Valid allocation
+
+            unsafe {
+                let mapping = device.allocator.map_memory(&mut allocation).unwrap();
+                std::ptr::copy_nonoverlapping(
+                    VERTICES.as_ptr() as *const u8,
+                    mapping,
+                    std::mem::size_of_val(&VERTICES),
+                );
+                device.allocator.unmap_memory(&mut allocation);
+            }
+
+            main_vertex_buffers.push(Buffer {
+                inner: buffer,
+                allocation,
+                _size: vertex_buffer_create_info.size / size_of::<Vertex>() as u64,
+                parent: device.clone(),
+                _phantom: PhantomData,
+            });
+        }
+
         //SAFETY: Known to be good
         let r = unsafe {
             Replaceable::new(
@@ -1079,6 +1201,7 @@ impl RenderData {
             surface: surface.clone(),
             frame: 0,
             swapchain_device,
+            main_vertex_buffers,
         })
     }
 
@@ -1148,6 +1271,12 @@ impl RenderData {
             //SAFETY: Exclusive access to cb. Valid parameters passed in
             unsafe {
                 dev.begin_command_buffer(cb, &command_buffer_begin_info)?;
+                dev.cmd_bind_vertex_buffers(
+                    cb,
+                    0,
+                    &[self.main_vertex_buffers[sync_index].inner],
+                    &[0],
+                );
                 dev.cmd_begin_render_pass(cb, &render_pass_begin_info, vk::SubpassContents::INLINE);
                 dev.cmd_bind_pipeline(
                     cb,
@@ -1394,7 +1523,7 @@ impl Context {
             frag: frag_shader_mod,
         };
 
-        let swapchain = RenderData::new(
+        let render_data = RenderData::new(
             dev.clone(),
             &phys_dev,
             surface.clone(),
@@ -1408,7 +1537,7 @@ impl Context {
         let graphics_context = Context {
             _win: win,
             nd: ContextNonDebug {
-                swapchain,
+                render_data,
                 _entry: entry,
                 _instance: instance,
                 _dev: dev,
@@ -1423,7 +1552,7 @@ impl Context {
     }
     pub fn resize(&mut self) {
         self.nd
-            .swapchain
+            .render_data
             .resize(
                 &self.nd.pipeline_layout,
                 &self.nd.shader_stages,
@@ -1432,7 +1561,7 @@ impl Context {
             .unwrap();
     }
     pub fn draw(&mut self) {
-        match self.nd.swapchain.draw() {
+        match self.nd.render_data.draw() {
             Ok(_) => {}
             Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => self.resize(),
             Err(vk::Result::SUBOPTIMAL_KHR) => self.resize(),

@@ -23,7 +23,7 @@ struct Opt {
 }
 
 fn main() {
-    env_logger::init();
+    pretty_env_logger::init();
     let opts = Opt::from_args();
     let event_loop = EventLoopBuilder::new().build().unwrap();
 
