@@ -76,13 +76,12 @@ struct ContextNonDebug {
     _surface: Arc<Surface>,
     pipeline_layout: PipelineLayout,
     shader_stages: ShaderStages,
-    phys_dev: PhysicalDevice,
 }
 
 struct Surface {
     inner: RwLock<vk::SurfaceKHR>,
     instance: surface::Instance,
-    _parent_instance: Arc<Instance>,
+    parent_instance: Arc<Instance>,
     parent_window: Arc<Window>,
 }
 
@@ -96,60 +95,55 @@ impl Drop for Surface {
     }
 }
 
-struct PhysicalDevice {
-    inner: vk::PhysicalDevice,
-    _parent: Arc<Instance>,
-}
-
 const VERT_SHADER_SOURCE: &str = include_str!("shader.vert");
 const FRAG_SHADER_SOURCE: &str = include_str!("shader.frag");
 
 impl Surface {
-    fn get_physical_device_surface_support(&self, phys_dev: &PhysicalDevice, i: u32) -> bool {
+    unsafe fn get_physical_device_surface_support(
+        &self,
+        phys_dev: vk::PhysicalDevice,
+        i: u32,
+    ) -> bool {
         //SAFETY: fetching owned data from a valid phys_dev
         unsafe {
             self.instance
-                .get_physical_device_surface_support(phys_dev.inner, i, *self.inner.read().unwrap())
+                .get_physical_device_surface_support(phys_dev, i, *self.inner.read().unwrap())
                 .unwrap()
         }
     }
 
-    fn get_physical_device_surface_capabilities(
+    unsafe fn get_physical_device_surface_capabilities(
         &self,
-        phys_dev: &PhysicalDevice,
+        phys_dev: vk::PhysicalDevice,
     ) -> vk::SurfaceCapabilitiesKHR {
         //SAFETY: Copying owned data
         unsafe {
-            self.instance.get_physical_device_surface_capabilities(
-                phys_dev.inner,
-                *self.inner.read().unwrap(),
-            )
+            self.instance
+                .get_physical_device_surface_capabilities(phys_dev, *self.inner.read().unwrap())
         }
         .unwrap()
     }
 
-    fn get_physical_device_surface_present_modes(
+    unsafe fn get_physical_device_surface_present_modes(
         &self,
-        phys_dev: &PhysicalDevice,
+        phys_dev: vk::PhysicalDevice,
     ) -> Vec<vk::PresentModeKHR> {
         //SAFETY: fetching owned data
         unsafe {
-            self.instance.get_physical_device_surface_present_modes(
-                phys_dev.inner,
-                *self.inner.read().unwrap(),
-            )
+            self.instance
+                .get_physical_device_surface_present_modes(phys_dev, *self.inner.read().unwrap())
         }
         .unwrap()
     }
-    fn get_physical_device_surface_formats(
+    unsafe fn get_physical_device_surface_formats(
         &self,
-        phys_dev: &PhysicalDevice,
+        phys_dev: vk::PhysicalDevice,
     ) -> VkResult<Vec<vk::SurfaceFormatKHR>> {
         //SAFETY: This is okay because surface is known to be valid and we're
         //getting a Vec of PODs
         unsafe {
             self.instance
-                .get_physical_device_surface_formats(phys_dev.inner, *self.inner.read().unwrap())
+                .get_physical_device_surface_formats(phys_dev, *self.inner.read().unwrap())
         }
     }
 
@@ -171,7 +165,7 @@ impl Surface {
         Ok(Self {
             inner: RwLock::new(surface),
             instance: surface_instance,
-            _parent_instance: instance.clone(),
+            parent_instance: instance.clone(),
             parent_window: win.clone(),
         })
     }
@@ -205,7 +199,9 @@ struct Queue {
 struct Device {
     inner: ash::Device,
     parent: Arc<Instance>,
+    phys_dev: vk::PhysicalDevice,
     allocator: ManuallyDrop<vk_mem::Allocator>,
+    memory_type_info: vk::PhysicalDeviceMemoryProperties,
 }
 
 struct GraphicsPipeline {
@@ -390,12 +386,12 @@ impl Drop for Device {
 }
 
 impl Instance {
-    fn get_physical_device_features(
+    unsafe fn get_physical_device_features(
         &self,
-        phys_dev: &PhysicalDevice,
+        phys_dev: vk::PhysicalDevice,
     ) -> vk::PhysicalDeviceFeatures {
         //SAFETY: Getting owned data with valid phys_dev
-        unsafe { self.inner.get_physical_device_features(phys_dev.inner) }
+        unsafe { self.inner.get_physical_device_features(phys_dev) }
     }
 
     fn new(
@@ -544,39 +540,35 @@ impl Instance {
         })
     }
 
-    fn get_physical_device_properties(
+    unsafe fn get_physical_device_properties(
         &self,
-        phys_dev: &PhysicalDevice,
+        phys_dev: vk::PhysicalDevice,
     ) -> vk::PhysicalDeviceProperties {
         //SAFETY: Phys dev guarantees valid
-        unsafe { self.inner.get_physical_device_properties(phys_dev.inner) }
+        unsafe { self.inner.get_physical_device_properties(phys_dev) }
     }
 
-    fn get_physical_device_queue_family_properties(
+    unsafe fn get_physical_device_queue_family_properties(
         &self,
-        phys_dev: &PhysicalDevice,
+        phys_dev: vk::PhysicalDevice,
     ) -> Vec<vk::QueueFamilyProperties> {
         //SAFETY: PhysicalDevice guarantess inner is valid
         unsafe {
             self.inner
-                .get_physical_device_queue_family_properties(phys_dev.inner)
+                .get_physical_device_queue_family_properties(phys_dev)
         }
     }
 
-    fn enumerate_device_extension_properties(
+    unsafe fn enumerate_device_extension_properties(
         &self,
-        phys_dev: &PhysicalDevice,
+        phys_dev: vk::PhysicalDevice,
     ) -> Vec<vk::ExtensionProperties> {
         //SAFETY: PhysicalDevice guarantees inner is valid
-        unsafe {
-            self.inner
-                .enumerate_device_extension_properties(phys_dev.inner)
-        }
-        .unwrap()
+        unsafe { self.inner.enumerate_device_extension_properties(phys_dev) }.unwrap()
     }
-    fn create_device(
+    unsafe fn create_device(
         self: &Arc<Self>,
-        phys_dev: &PhysicalDevice,
+        phys_dev: vk::PhysicalDevice,
         qfi: &QueueFamilyIndices,
         required_device_extensions: &[&str],
     ) -> Result<Device, Error> {
@@ -617,36 +609,33 @@ impl Instance {
         //SAFETY: Device is tied to an rc pointer to the parent
         unsafe {
             self.inner
-                .create_device(phys_dev.inner, &dev_ci, None)
+                .create_device(phys_dev, &dev_ci, None)
                 .map(|d| {
                     let allocator = ManuallyDrop::new(
                         vk_mem::Allocator::new(vk_mem::AllocatorCreateInfo::new(
                             &self.inner,
                             &d,
-                            phys_dev.inner,
+                            phys_dev,
                         ))
                         .unwrap(),
                     );
+                    let memory_type_info =
+                        self.inner.get_physical_device_memory_properties(phys_dev);
                     Device {
                         inner: d,
                         parent: self.clone(),
+                        phys_dev,
                         allocator,
+                        memory_type_info,
                     }
                 })
                 .map_err(|_| Error::DeviceCreation)
         }
     }
 
-    fn enumerate_physical_devices(self: &Arc<Self>) -> Vec<PhysicalDevice> {
+    fn enumerate_physical_devices(self: &Arc<Self>) -> Vec<vk::PhysicalDevice> {
         //SAFETY: this vec is dropped before instance is destroyed
-        unsafe { self.inner.enumerate_physical_devices() }
-            .unwrap()
-            .iter()
-            .map(|pd| PhysicalDevice {
-                _parent: self.clone(),
-                inner: *pd,
-            })
-            .collect()
+        unsafe { self.inner.enumerate_physical_devices() }.unwrap()
     }
 }
 
@@ -799,7 +788,6 @@ impl Replaceable {
     unsafe fn new(
         swapchain_device: &Arc<swapchain::Device>,
         surface: &Arc<Surface>,
-        phys_dev: &PhysicalDevice,
         graphics_queue: &Queue,
         present_queue: &Queue,
         device: &Arc<Device>,
@@ -809,14 +797,23 @@ impl Replaceable {
     ) -> VkResult<Self> {
         let win_size = surface.parent_window.inner_size();
         if win_size.width != 0 && win_size.height != 0 {
-            let swapchain_formats =
-                { surface.get_physical_device_surface_formats(phys_dev) }.unwrap();
+            //SAFETY: Phys dev is derived from same instance
+            let (swapchain_formats, swapchain_present_modes, swapchain_capabilities) = unsafe {
+                let swapchain_formats = surface
+                    .get_physical_device_surface_formats(device.phys_dev)
+                    .unwrap();
 
-            let swapchain_present_modes =
-                surface.get_physical_device_surface_present_modes(phys_dev);
+                let swapchain_present_modes =
+                    surface.get_physical_device_surface_present_modes(device.phys_dev);
 
-            let swapchain_capabilities = surface.get_physical_device_surface_capabilities(phys_dev);
-
+                let swapchain_capabilities =
+                    surface.get_physical_device_surface_capabilities(device.phys_dev);
+                (
+                    swapchain_formats,
+                    swapchain_present_modes,
+                    swapchain_capabilities,
+                )
+            };
             let swapchain_format = swapchain_formats
                 .iter()
                 .find(|format| {
@@ -1062,6 +1059,7 @@ struct Buffer<T> {
     allocation: vk_mem::Allocation,
     _size: u64,
     _phantom: PhantomData<T>,
+    _allocation_info: vk_mem::AllocationInfo,
 }
 
 impl<T> Drop for Buffer<T> {
@@ -1093,10 +1091,9 @@ struct RenderData {
 
 impl RenderData {
     //TODO: Clean this up
-    #[allow(clippy::too_many_arguments)]
+
     fn new(
         device: Arc<Device>,
-        phys_dev: &PhysicalDevice,
         surface: Arc<Surface>,
         graphics_queue: Queue,
         present_queue: Queue,
@@ -1133,12 +1130,16 @@ impl RenderData {
             .create_command_buffers(MAX_FRAMES_IN_FLIGHT as u32)
             .map_err(|_| Error::CommandBufferCreation)?;
 
-        let vertex_buffer_create_info = vk::BufferCreateInfo::default()
+        let vertex_buffer_ci = vk::BufferCreateInfo::default()
             .size(size_of::<Vertex>() as u64 * 3)
             .usage(vk::BufferUsageFlags::VERTEX_BUFFER);
-        let vertex_allocation_info = vk_mem::AllocationCreateInfo {
-            required_flags: vk::MemoryPropertyFlags::HOST_VISIBLE
-                | vk::MemoryPropertyFlags::HOST_COHERENT,
+        let vertex_buffer_allocation_ci = vk_mem::AllocationCreateInfo {
+            required_flags: vk::MemoryPropertyFlags::HOST_VISIBLE,
+            preferred_flags: vk::MemoryPropertyFlags::HOST_COHERENT,
+            flags: vk_mem::AllocationCreateFlags::MAPPED
+                | vk_mem::AllocationCreateFlags::HOST_ACCESS_SEQUENTIAL_WRITE,
+            usage: vk_mem::MemoryUsage::AutoPreferDevice,
+
             ..Default::default()
         };
 
@@ -1148,11 +1149,12 @@ impl RenderData {
             let (buffer, mut allocation) = unsafe {
                 device
                     .allocator
-                    .create_buffer(&vertex_buffer_create_info, &vertex_allocation_info)
+                    .create_buffer(&vertex_buffer_ci, &vertex_buffer_allocation_ci)
             }
             .unwrap();
-            //SAFETY: Valid allocation
+            let allocation_info = device.allocator.get_allocation_info(&allocation);
 
+            //SAFETY: Valid allocation
             unsafe {
                 let mapping = device.allocator.map_memory(&mut allocation).unwrap();
                 std::ptr::copy_nonoverlapping(
@@ -1160,14 +1162,27 @@ impl RenderData {
                     mapping,
                     std::mem::size_of_val(&VERTICES),
                 );
+
+                if device.memory_type_info.memory_types_as_slice()
+                    [allocation_info.memory_type as usize]
+                    .property_flags
+                    & vk::MemoryPropertyFlags::HOST_COHERENT
+                    == vk::MemoryPropertyFlags::empty()
+                {
+                    device
+                        .allocator
+                        .flush_allocation(&allocation, 0, vk::WHOLE_SIZE)
+                        .unwrap();
+                }
                 device.allocator.unmap_memory(&mut allocation);
             }
 
             main_vertex_buffers.push(Buffer {
                 inner: buffer,
                 allocation,
-                _size: vertex_buffer_create_info.size / size_of::<Vertex>() as u64,
+                _size: vertex_buffer_ci.size / size_of::<Vertex>() as u64,
                 parent: device.clone(),
+                _allocation_info: allocation_info,
                 _phantom: PhantomData,
             });
         }
@@ -1177,7 +1192,6 @@ impl RenderData {
             Replaceable::new(
                 &swapchain_device,
                 &surface,
-                phys_dev,
                 &graphics_queue,
                 &present_queue,
                 &device,
@@ -1328,7 +1342,6 @@ impl RenderData {
         &mut self,
         pipeline_layout: &PipelineLayout,
         shader_stages: &ShaderStages,
-        phys_dev: &PhysicalDevice,
     ) -> VkResult<()> {
         if self.r.is_none() {
             //SAFETY: Pretty much always safe
@@ -1340,7 +1353,6 @@ impl RenderData {
             Replaceable::new(
                 &self.swapchain_device,
                 &self.surface,
-                phys_dev,
                 &self.graphics_queue,
                 &self.present_queue,
                 &self.parent,
@@ -1442,8 +1454,9 @@ impl Context {
         let (_, phys_dev, qfi) = phys_devs
             .drain(..)
             .map(|phys_dev| {
-                let (score, qfp) =
-                    evaluate_phys_dev(&phys_dev, &instance, &surface, |extension_list| {
+                //SAFETY: phys_dev and surface derived from instance
+                let (score, qfp) = unsafe {
+                    evaluate_phys_dev(phys_dev, &instance, &surface, |extension_list| {
                         for ext in required_device_extensions {
                             //SAFETY: Lifetime of this cstr is less than
                             //lifetime of ext
@@ -1463,7 +1476,8 @@ impl Context {
                         } else {
                             None
                         }
-                    });
+                    })
+                };
                 (score, phys_dev, qfp)
             })
             .rev()
@@ -1471,12 +1485,12 @@ impl Context {
             .filter(|(score, _, _)| *score > 0)
             .ok_or(Error::NoSuitableDevice)?;
         let qfi = qfi.unwrap();
-
-        let dev = Arc::new(
+        //SAFETY: phys_dev derived from instance
+        let dev = Arc::new(unsafe {
             instance
-                .create_device(&phys_dev, &qfi, &required_device_extensions[..])
-                .map_err(|_| Error::DeviceCreation)?,
-        );
+                .create_device(phys_dev, &qfi, &required_device_extensions[..])
+                .map_err(|_| Error::DeviceCreation)
+        }?);
 
         let graphics_queue = dev.get_device_queue(qfi.graphics, 0);
 
@@ -1525,7 +1539,6 @@ impl Context {
 
         let render_data = RenderData::new(
             dev.clone(),
-            &phys_dev,
             surface.clone(),
             graphics_queue,
             present_queue,
@@ -1544,8 +1557,6 @@ impl Context {
                 _surface: surface,
                 pipeline_layout,
                 shader_stages,
-
-                phys_dev,
             },
         };
         Ok(graphics_context)
@@ -1553,11 +1564,7 @@ impl Context {
     pub fn resize(&mut self) {
         self.nd
             .render_data
-            .resize(
-                &self.nd.pipeline_layout,
-                &self.nd.shader_stages,
-                &self.nd.phys_dev,
-            )
+            .resize(&self.nd.pipeline_layout, &self.nd.shader_stages)
             .unwrap();
     }
     pub fn draw(&mut self) {
@@ -1608,9 +1615,11 @@ impl QueueFamilyIndicesOpt {
         }
     }
 
-    fn find(phys_dev: &PhysicalDevice, instance: &Instance, surface: &Surface) -> Self {
+    unsafe fn find(phys_dev: vk::PhysicalDevice, surface: &Surface) -> Self {
+        let instance = &surface.parent_instance;
         //SAFETY: Dropped before instance is destroyed
-        let queue_families = instance.get_physical_device_queue_family_properties(phys_dev);
+        let queue_families =
+            unsafe { instance.get_physical_device_queue_family_properties(phys_dev) };
         let candidate_graphics_queues = queue_families
             .iter()
             .enumerate()
@@ -1620,7 +1629,7 @@ impl QueueFamilyIndicesOpt {
         let graphics = candidate_graphics_queues
             .iter()
             //SAFETY: Due to the properties of enumerate, i is always in bounds
-            .filter(|(i, _)| surface.get_physical_device_surface_support(phys_dev, *i))
+            .filter(|(i, _)| unsafe { surface.get_physical_device_surface_support(phys_dev, *i) })
             .map(|(i, _)| i)
             .next()
             .or_else(|| candidate_graphics_queues.iter().map(|(i, _)| i).next())
@@ -1629,7 +1638,7 @@ impl QueueFamilyIndicesOpt {
         let present = graphics
             .iter()
             //SAFETY: graphics queue index is always in bounds
-            .filter(|graphics_queue_index| {
+            .filter(|graphics_queue_index| unsafe {
                 surface.get_physical_device_surface_support(phys_dev, **graphics_queue_index)
             })
             .copied()
@@ -1643,7 +1652,10 @@ impl QueueFamilyIndicesOpt {
                         //SAFETY: queue_family_index will always be in bounds
                         //due to enumerate
 
-                        surface.get_physical_device_surface_support(phys_dev, *queue_family_index)
+                        unsafe {
+                            surface
+                                .get_physical_device_surface_support(phys_dev, *queue_family_index)
+                        }
                     })
             });
 
@@ -1651,18 +1663,19 @@ impl QueueFamilyIndicesOpt {
     }
 }
 
-fn evaluate_phys_dev<F: FnOnce(&[vk::ExtensionProperties]) -> Option<u32>>(
-    phys_dev: &PhysicalDevice,
+unsafe fn evaluate_phys_dev<F: FnOnce(&[vk::ExtensionProperties]) -> Option<u32>>(
+    phys_dev: vk::PhysicalDevice,
     instance: &Instance,
     surface: &Surface,
     score_extensions: F,
 ) -> (u32, Option<QueueFamilyIndices>) {
-    match score_extensions(&instance.enumerate_device_extension_properties(phys_dev)) {
+    //SAFETY: phys_dev derived from instance
+    match score_extensions(&unsafe { instance.enumerate_device_extension_properties(phys_dev) }) {
         Some(mut score) => {
             //SAFETY: We discard features before instance is destroyed
-            let features = instance.get_physical_device_features(phys_dev);
+            let features = unsafe { instance.get_physical_device_features(phys_dev) };
             //SAFETY: We discard features before instance is destroyed
-            let props = instance.get_physical_device_properties(phys_dev);
+            let props = unsafe { instance.get_physical_device_properties(phys_dev) };
 
             score += match props.device_type {
                 vk::PhysicalDeviceType::DISCRETE_GPU => 100,
@@ -1673,7 +1686,8 @@ fn evaluate_phys_dev<F: FnOnce(&[vk::ExtensionProperties]) -> Option<u32>>(
 
             let mut suitable = true;
 
-            let queue_family_indexes = QueueFamilyIndicesOpt::find(phys_dev, instance, surface);
+            //SAFETY: Surface and phys_dev are derived from same instance
+            let queue_family_indexes = unsafe { QueueFamilyIndicesOpt::find(phys_dev, surface) };
 
             suitable &= features.geometry_shader != 0
                 && queue_family_indexes.graphics.is_some()
