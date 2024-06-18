@@ -8,8 +8,7 @@ edition = "2021"
 [dependencies]
 ash = "0.38.0"
 ash-window = "0.13.0"
-bytemuck = { version = "1.15.0", features = ["derive"] }
-env_logger = "0.11.3"
+bytemuck = { version = "1.16.0", features = ["derive"] }
 log = { version = "0.4.21", features = ["kv"] }
 pretty_env_logger = "0.5.0"
 shaderc = { version = "0.8.3", features = ["prefer-static-linking"] }
@@ -17,10 +16,10 @@ structopt = "0.3.26"
 strum = { version = "0.26.2", features = ["strum_macros", "derive"] }
 vek = { version = "0.17.0", features = ["bytemuck"] }
 vk-mem = "0.4.0"
-winit = "0.29.15"
+winit = "0.30.2"
 # Enable a small amount of optimization in debug mode
 [profile.dev]
-opt-level = 0
+opt-level = 1
 
 [profile.dev.package."*"]
 opt-level = 3
