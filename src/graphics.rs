@@ -179,7 +179,7 @@ impl Drop for PipelineLayout {
     fn drop(&mut self) {
         //SAFETY: We know this is okay because our safety requirement is that
         //this is dropped after any child object and we make sure of that
-        unsafe { self.parent.destroy_pipeline_layout(self.inner) };
+        unsafe { self.parent.destroy_pipeline_layout(self.inner, None) };
     }
 }
 
@@ -187,6 +187,14 @@ struct Instance {
     inner: ash::Instance,
     parent: Arc<Entry>,
     logger: Option<(vk::DebugUtilsMessengerEXT, debug_utils::Instance)>,
+}
+
+impl std::ops::Deref for Instance {
+    type Target = ash::Instance;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
 }
 
 struct Queue {
@@ -203,6 +211,14 @@ struct Device {
     memory_type_info: vk::PhysicalDeviceMemoryProperties,
 }
 
+impl std::ops::Deref for Device {
+    type Target = ash::Device;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
 struct GraphicsPipeline {
     inner: vk::Pipeline,
     parent: Arc<Device>,
@@ -211,7 +227,7 @@ struct GraphicsPipeline {
 impl Drop for GraphicsPipeline {
     fn drop(&mut self) {
         //SAFETY: We made the pipeline in here from parent
-        unsafe { self.parent.destroy_pipeline(self.inner) }
+        unsafe { self.parent.destroy_pipeline(self.inner, None) }
     }
 }
 
@@ -279,162 +295,6 @@ impl Drop for CommandPool {
 
 impl Device {
     //SAFETY REQUIREMENTS: framebuffer derived from self
-    unsafe fn destroy_framebuffer(&self, framebuffer: vk::Framebuffer) {
-        //SAFETY: transient
-        unsafe { self.inner.destroy_framebuffer(framebuffer, None) }
-    }
-    //SAFETY REQUIREMENTS: image_view derived from self
-    unsafe fn destroy_image_view(&self, image_view: vk::ImageView) {
-        //SAFETY: transient
-        unsafe { self.inner.destroy_image_view(image_view, None) }
-    }
-    //SAFETY: self must be valid
-    unsafe fn device_wait_idle(&self) -> VkResult<()> {
-        //SAFETY: Transient
-        unsafe { self.inner.device_wait_idle() }
-    }
-    //SAFETY: cb comes from this device, is recording. All params are valid and
-    //come from this device
-    unsafe fn cmd_end_render_pass(&self, command_buffer: vk::CommandBuffer) {
-        //SAFETY: Transient
-        unsafe { self.inner.cmd_end_render_pass(command_buffer) }
-    }
-
-    //SAFETY: cb comes from this device, is recording
-    unsafe fn end_command_buffer(&self, command_buffer: vk::CommandBuffer) -> VkResult<()> {
-        //SAFETY: transient
-        unsafe { self.inner.end_command_buffer(command_buffer) }
-    }
-
-    //SAFETY: cb comes from this device, is recording. All params are valid and
-    //come from this device
-    unsafe fn cmd_draw(
-        &self,
-        command_buffer: vk::CommandBuffer,
-        vertex_count: u32,
-        instance_count: u32,
-        first_vertex: u32,
-        first_instance: u32,
-    ) {
-        //SAFETY: Transient
-        unsafe {
-            self.inner.cmd_draw(
-                command_buffer,
-                vertex_count,
-                instance_count,
-                first_vertex,
-                first_instance,
-            )
-        }
-    }
-
-    //SAFETY: cb comes from this device, is recording. All params are valid and
-    //come from this device
-    unsafe fn cmd_set_scissor(
-        &self,
-        command_buffer: vk::CommandBuffer,
-        first_viewport: u32,
-        scissors: &[vk::Rect2D],
-    ) {
-        //SAFETY: Transient
-        unsafe {
-            self.inner
-                .cmd_set_scissor(command_buffer, first_viewport, scissors)
-        }
-    }
-
-    //SAFETY: cb comes from this device, is recording. All params are valid and
-    //come from this device
-    unsafe fn cmd_set_viewport(
-        &self,
-        command_buffer: vk::CommandBuffer,
-        first_viewport: u32,
-        viewports: &[vk::Viewport],
-    ) {
-        //SAFETY: Transient
-        unsafe {
-            self.inner
-                .cmd_set_viewport(command_buffer, first_viewport, viewports)
-        }
-    }
-
-    //SAFETY: cb comes from this device, is recording. All params are valid and
-    //come from this device
-    unsafe fn cmd_bind_pipeline(
-        &self,
-        command_buffer: vk::CommandBuffer,
-        pipeline_bind_point: vk::PipelineBindPoint,
-        pipeline: vk::Pipeline,
-    ) {
-        //SAFETY: Transient
-        unsafe {
-            self.inner
-                .cmd_bind_pipeline(command_buffer, pipeline_bind_point, pipeline)
-        }
-    }
-    //SAFETY: cb comes from this device, is recording. All params are valid and
-    //come from this device
-    unsafe fn cmd_begin_render_pass(
-        &self,
-        command_buffer: vk::CommandBuffer,
-        render_pass_begin: &vk::RenderPassBeginInfo,
-        contents: vk::SubpassContents,
-    ) {
-        //SAFETY: Transient
-        unsafe {
-            self.inner
-                .cmd_begin_render_pass(command_buffer, render_pass_begin, contents)
-        }
-    }
-    //SAFETY: cb comes from this device, is recording. All params are valid and
-    //come from this device
-    unsafe fn cmd_bind_vertex_buffers(
-        &self,
-        command_buffer: vk::CommandBuffer,
-        first_binding: u32,
-        buffers: &[vk::Buffer],
-        offsets: &[u64],
-    ) {
-        //SAFETY: Transient
-        unsafe {
-            self.inner
-                .cmd_bind_vertex_buffers(command_buffer, first_binding, buffers, offsets)
-        }
-    }
-
-    //SAFETY: cb comes from this device, is ready to record, begin_info is valid
-    unsafe fn begin_command_buffer(
-        &self,
-        command_buffer: vk::CommandBuffer,
-        begin_info: &vk::CommandBufferBeginInfo,
-    ) -> VkResult<()> {
-        //SSAFETY: transient
-        unsafe { self.inner.begin_command_buffer(command_buffer, begin_info) }
-    }
-    //SAFETY: cb comes from this device
-    unsafe fn reset_command_buffer(
-        &self,
-        cb: vk::CommandBuffer,
-        flags: vk::CommandBufferResetFlags,
-    ) -> VkResult<()> {
-        //SAFETY: Transient
-        unsafe { self.inner.reset_command_buffer(cb, flags) }
-    }
-    //SAFETY REQUIREMENTS: fences come from this device
-    unsafe fn reset_fences(&self, fences: &[vk::Fence]) -> VkResult<()> {
-        //SAFETY: Transient
-        unsafe { self.inner.reset_fences(fences) }
-    }
-    //SAFETY REQUIREMENTS: Valid CI
-    unsafe fn create_fence(&self, ci: &vk::FenceCreateInfo) -> VkResult<vk::Fence> {
-        //SAFETY: transient
-        unsafe { self.inner.create_fence(ci, None) }
-    }
-    //SAFETY REQUIREMENTS: valid ci
-    unsafe fn create_semaphore(&self, ci: &vk::SemaphoreCreateInfo) -> VkResult<vk::Semaphore> {
-        //SAFETY: transient
-        unsafe { self.inner.create_semaphore(ci, None) }
-    }
     fn new_swapchain_device(&self) -> swapchain::Device {
         swapchain::Device::new(&self.parent.inner, &self.inner)
     }
@@ -472,27 +332,6 @@ impl Device {
             parent: self.clone(),
         })
     }
-    //SAFETY REQUIREMENTS: Pipeline layout came from this device
-    unsafe fn destroy_pipeline_layout(&self, layout: vk::PipelineLayout) {
-        //SAFETY: See function safety requirements
-        unsafe { self.inner.destroy_pipeline_layout(layout, None) }
-    }
-    //SAFETY REQUIREMENTS: Pipeline is derived from this device
-    unsafe fn destroy_pipeline(&self, pipeline: vk::Pipeline) {
-        //SAFETY: See function safety requirements
-        unsafe { self.inner.destroy_pipeline(pipeline, None) };
-    }
-    //SAFETY REQUIREMENTS: fences must be derived from this device
-    unsafe fn wait_for_fences(
-        &self,
-        fences: &[vk::Fence],
-        wait_all: bool,
-        timeout: u64,
-    ) -> VkResult<()> {
-        //SAFETY: See function safety requirements
-        unsafe { self.inner.wait_for_fences(fences, wait_all, timeout) }
-    }
-
     //SAFETY REQUIREMENTS: create_infos are valid
     unsafe fn create_graphics_pipelines(
         self: &Arc<Self>,
@@ -1327,15 +1166,15 @@ impl RenderData {
         for _ in 0..MAX_FRAMES_IN_FLIGHT {
             image_available_semaphores.push(
                 //SAFETY: We destroy this in Swapchain::drop() before device is destroyed
-                unsafe { device.create_semaphore(&semaphore_ci) }.unwrap(),
+                unsafe { device.create_semaphore(&semaphore_ci, None) }.unwrap(),
             );
             render_finished_semaphores.push(
                 //SAFETY: Destroyed in Swapchain::drop()
-                unsafe { device.create_semaphore(&semaphore_ci) }.unwrap(),
+                unsafe { device.create_semaphore(&semaphore_ci, None) }.unwrap(),
             );
             in_flight_fences.push(
                 //SAFETY: Destroyed in Swapchain::drop()
-                unsafe { device.create_fence(&fence_ci) }.unwrap(),
+                unsafe { device.create_fence(&fence_ci, None) }.unwrap(),
             );
         }
 
@@ -1600,10 +1439,10 @@ impl Drop for Replaceable {
         //SAFETY: Own these objects and have mutable refs to them
         unsafe {
             for framebuffer in self.framebuffers.iter().copied() {
-                dev.destroy_framebuffer(framebuffer);
+                dev.destroy_framebuffer(framebuffer, None);
             }
             for image in self.image_views.iter() {
-                dev.destroy_image_view(*image)
+                dev.destroy_image_view(*image, None)
             }
             swapchain_device.destroy_swapchain(self.swapchain, None)
         }
