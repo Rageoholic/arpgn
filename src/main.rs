@@ -54,7 +54,10 @@ impl ApplicationHandler for App {
                 },
             ) {
                 Ok(gc) => gc,
-                Err(e) => panic!("Encountered error creating graphics context {:?}", e),
+                Err(e) => panic!(
+                    "Encountered error creating graphics context {:?}",
+                    e
+                ),
             };
             window.set_visible(true);
             *self = App::Active(window, graphics_context);

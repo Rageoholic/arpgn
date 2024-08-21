@@ -2,9 +2,9 @@ use std::{
     collections::HashSet,
     ffi::{CStr, CString},
     fmt::Debug,
-    mem::{size_of, ManuallyDrop},
+    mem::{size_of_val, ManuallyDrop},
     os::raw::c_void,
-    ptr::null,
+    ptr::{copy_nonoverlapping, null},
     sync::{Arc, RwLock},
 };
 
@@ -32,11 +32,14 @@ struct Vertex {
     col: Vec3<f32>,
 }
 
-const VERTICES: [Vertex; 3] = [
-    Vertex::new(Vec2::new(0.0, -0.5), Vec3::new(1.0, 0.0, 0.0)),
-    Vertex::new(Vec2::new(0.5, 0.5), Vec3::new(0.0, 1.0, 0.0)),
-    Vertex::new(Vec2::new(-0.5, 0.5), Vec3::new(0.0, 0.0, 1.0)),
+const VERTICES: [Vertex; 4] = [
+    Vertex::new(Vec2::new(-0.5, -0.5), Vec3::new(0.0, 0.0, 1.0)),
+    Vertex::new(Vec2::new(0.5, 0.5), Vec3::new(1.0, 1.0, 1.0)),
+    Vertex::new(Vec2::new(-0.5, 0.5), Vec3::new(0.0, 1.0, 1.0)),
+    Vertex::new(Vec2::new(0.5, -0.5), Vec3::new(1.0, 0.0, 1.0)),
 ];
+
+const INDICES: [u16; 6] = [0, 1, 2, 0, 3, 1];
 
 impl Vertex {
     const fn new(pos: Vec2<f32>, col: Vec3<f32>) -> Self {
@@ -106,7 +109,11 @@ impl Surface {
         //SAFETY: fetching owned data from a valid phys_dev
         unsafe {
             self.instance
-                .get_physical_device_surface_support(phys_dev, i, *self.inner.read().unwrap())
+                .get_physical_device_surface_support(
+                    phys_dev,
+                    i,
+                    *self.inner.read().unwrap(),
+                )
                 .unwrap()
         }
     }
@@ -117,8 +124,10 @@ impl Surface {
     ) -> vk::SurfaceCapabilitiesKHR {
         //SAFETY: Copying owned data
         unsafe {
-            self.instance
-                .get_physical_device_surface_capabilities(phys_dev, *self.inner.read().unwrap())
+            self.instance.get_physical_device_surface_capabilities(
+                phys_dev,
+                *self.inner.read().unwrap(),
+            )
         }
         .unwrap()
     }
@@ -129,8 +138,10 @@ impl Surface {
     ) -> Vec<vk::PresentModeKHR> {
         //SAFETY: fetching owned data
         unsafe {
-            self.instance
-                .get_physical_device_surface_present_modes(phys_dev, *self.inner.read().unwrap())
+            self.instance.get_physical_device_surface_present_modes(
+                phys_dev,
+                *self.inner.read().unwrap(),
+            )
         }
         .unwrap()
     }
@@ -141,12 +152,17 @@ impl Surface {
         //SAFETY: This is okay because surface is known to be valid and we're
         //getting a Vec of PODs
         unsafe {
-            self.instance
-                .get_physical_device_surface_formats(phys_dev, *self.inner.read().unwrap())
+            self.instance.get_physical_device_surface_formats(
+                phys_dev,
+                *self.inner.read().unwrap(),
+            )
         }
     }
 
-    fn new(instance: &Arc<Instance>, win: &Arc<Window>) -> Result<Surface, Error> {
+    fn new(
+        instance: &Arc<Instance>,
+        win: &Arc<Window>,
+    ) -> Result<Surface, Error> {
         //SAFETY: Valid window handles, valid instance, Surface destroyed only
         //after all subobjects
         let surface = unsafe {
@@ -159,7 +175,8 @@ impl Surface {
             )
         }
         .map_err(|_| Error::SurfaceCreation)?;
-        let surface_instance = ash::khr::surface::Instance::new(&instance.parent, &instance.inner);
+        let surface_instance =
+            ash::khr::surface::Instance::new(&instance.parent, &instance.inner);
 
         Ok(Self {
             inner: RwLock::new(surface),
@@ -252,14 +269,22 @@ struct CommandPool {
 
 impl CommandPool {
     //SAFETY: cbs were created from this command pool
-    unsafe fn free_command_buffers(&self, command_buffers: &[vk::CommandBuffer]) {
+    unsafe fn free_command_buffers(
+        &self,
+        command_buffers: &[vk::CommandBuffer],
+    ) {
         //SAFETY: We were derived from parent
         unsafe {
-            self.parent
-                .free_command_buffers(*self.inner.write().unwrap(), command_buffers)
+            self.parent.free_command_buffers(
+                *self.inner.write().unwrap(),
+                command_buffers,
+            )
         }
     }
-    fn create_command_buffers(self: &Arc<Self>, count: u32) -> VkResult<Vec<CommandBuffer>> {
+    fn create_command_buffers(
+        self: &Arc<Self>,
+        count: u32,
+    ) -> VkResult<Vec<CommandBuffer>> {
         #[allow(clippy::readonly_write_lock)]
         let inner = self.inner.write().unwrap();
         let alloc_info = vk::CommandBufferAllocateInfo::default()
@@ -267,16 +292,18 @@ impl CommandPool {
             .command_pool(*inner);
 
         //SAFETY: alloc_info is valid. Inner is an exclusive ref to the command pool
-        unsafe { self.parent.inner.allocate_command_buffers(&alloc_info) }.map(|command_buffers| {
-            command_buffers
-                .iter()
-                .copied()
-                .map(|command_buffer| CommandBuffer {
-                    inner: command_buffer,
-                    parent: self.clone(),
-                })
-                .collect()
-        })
+        unsafe { self.parent.inner.allocate_command_buffers(&alloc_info) }.map(
+            |command_buffers| {
+                command_buffers
+                    .iter()
+                    .copied()
+                    .map(|command_buffer| CommandBuffer {
+                        inner: command_buffer,
+                        parent: self.clone(),
+                    })
+                    .collect()
+            },
+        )
     }
 }
 
@@ -327,10 +354,12 @@ impl Device {
         create_info: &vk::CommandPoolCreateInfo,
     ) -> VkResult<CommandPool> {
         //SAFETY: create_info is valid
-        unsafe { self.inner.create_command_pool(create_info, None) }.map(|inner| CommandPool {
-            inner: RwLock::new(inner),
-            parent: self.clone(),
-        })
+        unsafe { self.inner.create_command_pool(create_info, None) }.map(
+            |inner| CommandPool {
+                inner: RwLock::new(inner),
+                parent: self.clone(),
+            },
+        )
     }
     //SAFETY REQUIREMENTS: create_infos are valid
     unsafe fn create_graphics_pipelines(
@@ -339,8 +368,11 @@ impl Device {
     ) -> VkResult<Vec<GraphicsPipeline>> {
         //SAFETY: Using transient safety from being in an unsafe fn, create_info is valid
         unsafe {
-            self.inner
-                .create_graphics_pipelines(vk::PipelineCache::null(), create_infos, None)
+            self.inner.create_graphics_pipelines(
+                vk::PipelineCache::null(),
+                create_infos,
+                None,
+            )
         }
         .map(|v| {
             v.iter()
@@ -359,10 +391,12 @@ impl Device {
         create_info: &vk::RenderPassCreateInfo,
     ) -> VkResult<RenderPass> {
         //SAFETY: Using transient safety from being in an unsafe fn, create_info is valid
-        unsafe { self.inner.create_render_pass(create_info, None) }.map(|inner| RenderPass {
-            inner,
-            parent: self.clone(),
-        })
+        unsafe { self.inner.create_render_pass(create_info, None) }.map(
+            |inner| RenderPass {
+                inner,
+                parent: self.clone(),
+            },
+        )
     }
 
     //SAFETY REQUIREMENTS: create_infos are valid
@@ -371,21 +405,24 @@ impl Device {
         create_info: &vk::PipelineLayoutCreateInfo,
     ) -> VkResult<PipelineLayout> {
         //SAFETY: Using transient safety from being in an unsafe fn, create_info is valid
-        unsafe { self.inner.create_pipeline_layout(create_info, None) }.map(|inner| {
-            PipelineLayout {
+        unsafe { self.inner.create_pipeline_layout(create_info, None) }.map(
+            |inner| PipelineLayout {
                 inner,
                 parent: self.clone(),
-            }
-        })
+            },
+        )
     }
 
     fn create_shader_module(
         self: &Arc<Self>,
         source: shaderc::CompilationArtifact,
     ) -> ShaderModule {
-        let shader_ci = vk::ShaderModuleCreateInfo::default().code(source.as_binary());
+        let shader_ci =
+            vk::ShaderModuleCreateInfo::default().code(source.as_binary());
         //SAFETY: Valid SPIR-V, these are tied together via Drop
-        let shader_module = unsafe { self.inner.create_shader_module(&shader_ci, None).unwrap() };
+        let shader_module = unsafe {
+            self.inner.create_shader_module(&shader_ci, None).unwrap()
+        };
         ShaderModule {
             inner: shader_module,
             parent: self.clone(),
@@ -395,7 +432,9 @@ impl Device {
     fn get_device_queue(self: &Arc<Self>, qfi: u32, queue_index: u32) -> Queue {
         Queue {
             //SAFETY: This must be dropped in order to drop the device
-            inner: RwLock::new(unsafe { self.inner.get_device_queue(qfi, queue_index) }),
+            inner: RwLock::new(unsafe {
+                self.inner.get_device_queue(qfi, queue_index)
+            }),
             _parent: self.clone(),
             qfi,
         }
@@ -454,14 +493,16 @@ impl Instance {
             .application_name(c"placeholder")
             .engine_name(c"placeholder");
 
-        //SAFETY: We know this is safe because we drop this Vec before we drop
-        //entry
-        let avail_extensions = unsafe { entry.enumerate_instance_extension_properties(None) }
-            .map_err(|_| Error::InstanceCreation)?;
+        let avail_extensions =
+            //SAFETY: We know this is safe because we drop this Vec before we drop
+            //entry
+            unsafe { entry.enumerate_instance_extension_properties(None) }
+                .map_err(|_| Error::InstanceCreation)?;
 
-        //SAFETY: We know this is safe because we drop this Vec before we drop entry
-        let avail_layers = unsafe { entry.enumerate_instance_layer_properties() }
-            .map_err(|_| Error::InstanceCreation)?;
+        let avail_layers =
+            //SAFETY: We know this is safe because we drop this Vec before we drop entry
+            unsafe { entry.enumerate_instance_layer_properties() }
+                .map_err(|_| Error::InstanceCreation)?;
 
         let mut missing_instance_extensions = Vec::new();
 
@@ -545,7 +586,8 @@ impl Instance {
         let instance = unsafe { entry.create_instance(&instance_ci, None) }
             .map_err(|_| Error::InstanceCreation)?;
 
-        let logger = if opts.graphics_validation_layers != ValidationLevel::None {
+        let logger = if opts.graphics_validation_layers != ValidationLevel::None
+        {
             let debug_instance = debug_utils::Instance::new(&entry, &instance);
             let debug_ci = vk::DebugUtilsMessengerCreateInfoEXT::default()
                 .message_severity(graphics_validation_sev_to_debug_utils_flags(
@@ -562,12 +604,16 @@ impl Instance {
             let debug_messenger = {
                 //SAFETY: Should always be fine if we got here. We added the
                 //layers we care about and the extension
-                unsafe { debug_instance.create_debug_utils_messenger(&debug_ci, None) }.unwrap()
+                unsafe {
+                    debug_instance.create_debug_utils_messenger(&debug_ci, None)
+                }
+                .unwrap()
             };
 
-            let debug_message_info = vk::DebugUtilsMessengerCallbackDataEXT::default()
-                .message(c"Test message")
-                .message_id_name(c"test");
+            let debug_message_info =
+                vk::DebugUtilsMessengerCallbackDataEXT::default()
+                    .message(c"Test message")
+                    .message_id_name(c"test");
 
             //SAFETY: Should always be fine
             unsafe {
@@ -613,7 +659,8 @@ impl Instance {
         phys_dev: vk::PhysicalDevice,
     ) -> Vec<vk::ExtensionProperties> {
         //SAFETY: PhysicalDevice guarantees inner is valid
-        unsafe { self.inner.enumerate_device_extension_properties(phys_dev) }.unwrap()
+        unsafe { self.inner.enumerate_device_extension_properties(phys_dev) }
+            .unwrap()
     }
     unsafe fn create_device(
         self: &Arc<Self>,
@@ -661,15 +708,18 @@ impl Instance {
                 .create_device(phys_dev, &dev_ci, None)
                 .map(|d| {
                     let allocator = ManuallyDrop::new(
-                        vk_mem::Allocator::new(vk_mem::AllocatorCreateInfo::new(
-                            &self.inner,
-                            &d,
-                            phys_dev,
-                        ))
+                        vk_mem::Allocator::new(
+                            vk_mem::AllocatorCreateInfo::new(
+                                &self.inner,
+                                &d,
+                                phys_dev,
+                            ),
+                        )
                         .unwrap(),
                     );
-                    let memory_type_info =
-                        self.inner.get_physical_device_memory_properties(phys_dev);
+                    let memory_type_info = self
+                        .inner
+                        .get_physical_device_memory_properties(phys_dev);
                     Device {
                         inner: d,
                         parent: self.clone(),
@@ -708,7 +758,10 @@ impl Drop for Instance {
     fn drop(&mut self) {
         if let Some((ref debug_messenger, ref debug_instance)) = self.logger {
             //SAFETY: Should always be fine
-            unsafe { debug_instance.destroy_debug_utils_messenger(*debug_messenger, None) }
+            unsafe {
+                debug_instance
+                    .destroy_debug_utils_messenger(*debug_messenger, None)
+            }
         }
 
         //SAFETY: This is always valid
@@ -760,7 +813,8 @@ unsafe extern "system" fn debug_callback(
     //SAFETY: Assuming callback_data's pointers are valid
     let log_cstr = unsafe { CStr::from_ptr(callback_data.p_message) };
     //SAFETY: Assuming callback_data's pointers are valid
-    let log_id_cstr = unsafe { CStr::from_ptr(callback_data.p_message_id_name) };
+    let log_id_cstr =
+        unsafe { CStr::from_ptr(callback_data.p_message_id_name) };
 
     let message_type = debug_utils_message_type_to_str(message_type);
     match sev {
@@ -809,8 +863,12 @@ fn debug_utils_message_type_to_str(
     message_type: vk::DebugUtilsMessageTypeFlagsEXT,
 ) -> &'static str {
     match message_type {
-        vk::DebugUtilsMessageTypeFlagsEXT::GENERAL => "graphics_subsystem.debug_utils.general",
-        vk::DebugUtilsMessageTypeFlagsEXT::PERFORMANCE => "graphics_subsystem.debug_utils.perf",
+        vk::DebugUtilsMessageTypeFlagsEXT::GENERAL => {
+            "graphics_subsystem.debug_utils.general"
+        }
+        vk::DebugUtilsMessageTypeFlagsEXT::PERFORMANCE => {
+            "graphics_subsystem.debug_utils.perf"
+        }
         vk::DebugUtilsMessageTypeFlagsEXT::VALIDATION => {
             "graphics_subsystem.debug_utils.validation"
         }
@@ -849,16 +907,20 @@ impl Replaceable {
         let win_size = surface.parent_window.inner_size();
         if win_size.width != 0 && win_size.height != 0 {
             //SAFETY: Phys dev is derived from same instance
-            let (swapchain_formats, swapchain_present_modes, swapchain_capabilities) = unsafe {
+            let (
+                swapchain_formats,
+                swapchain_present_modes,
+                swapchain_capabilities,
+            ) = unsafe {
                 let swapchain_formats = surface
                     .get_physical_device_surface_formats(device.phys_dev)
                     .unwrap();
 
-                let swapchain_present_modes =
-                    surface.get_physical_device_surface_present_modes(device.phys_dev);
+                let swapchain_present_modes = surface
+                    .get_physical_device_surface_present_modes(device.phys_dev);
 
-                let swapchain_capabilities =
-                    surface.get_physical_device_surface_capabilities(device.phys_dev);
+                let swapchain_capabilities = surface
+                    .get_physical_device_surface_capabilities(device.phys_dev);
                 (
                     swapchain_formats,
                     swapchain_present_modes,
@@ -869,7 +931,8 @@ impl Replaceable {
                 .iter()
                 .find(|format| {
                     format.format == vk::Format::B8G8R8A8_SRGB
-                        && format.color_space == vk::ColorSpaceKHR::SRGB_NONLINEAR
+                        && format.color_space
+                            == vk::ColorSpaceKHR::SRGB_NONLINEAR
                 })
                 .copied()
                 .or_else(|| swapchain_formats.iter().copied().next())
@@ -878,12 +941,15 @@ impl Replaceable {
             let swapchain_present_mode = swapchain_present_modes
                 .iter()
                 .copied()
-                .find(|present_mode| *present_mode == vk::PresentModeKHR::MAILBOX)
+                .find(|present_mode| {
+                    *present_mode == vk::PresentModeKHR::MAILBOX
+                })
                 .or_else(|| {
-                    swapchain_present_modes
-                        .iter()
-                        .copied()
-                        .find(|present_mode| *present_mode == vk::PresentModeKHR::IMMEDIATE)
+                    swapchain_present_modes.iter().copied().find(
+                        |present_mode| {
+                            *present_mode == vk::PresentModeKHR::IMMEDIATE
+                        },
+                    )
                 })
                 .unwrap_or(vk::PresentModeKHR::FIFO);
 
@@ -903,7 +969,8 @@ impl Replaceable {
 
             let qfi_if_needed = [graphics_queue.qfi, present_queue.qfi];
 
-            let shared_graphics_present_queue = graphics_queue.qfi == present_queue.qfi;
+            let shared_graphics_present_queue =
+                graphics_queue.qfi == present_queue.qfi;
 
             //create_swapchain_KHR requires external sync on the surface
             #[allow(clippy::readonly_write_lock)]
@@ -922,7 +989,11 @@ impl Replaceable {
                 } else {
                     vk::SharingMode::CONCURRENT
                 },
-                queue_family_index_count: if shared_graphics_present_queue { 0 } else { 2 },
+                queue_family_index_count: if shared_graphics_present_queue {
+                    0
+                } else {
+                    2
+                },
                 p_queue_family_indices: if shared_graphics_present_queue {
                     null()
                 } else {
@@ -932,15 +1003,21 @@ impl Replaceable {
                 composite_alpha: vk::CompositeAlphaFlagsKHR::OPAQUE,
                 present_mode: swapchain_present_mode,
                 clipped: vk::TRUE,
-                old_swapchain: old_swapchain.copied().unwrap_or(vk::SwapchainKHR::null()),
+                old_swapchain: old_swapchain
+                    .copied()
+                    .unwrap_or(vk::SwapchainKHR::null()),
                 ..Default::default()
             };
             //SAFETY: Allocation callbacks must be valid, swapchain_ci must be
             //valid, swapchain must be destroyed before surface
-            let swapchain = unsafe { swapchain_device.create_swapchain(&swapchain_ci, None) }?;
+            let swapchain = unsafe {
+                swapchain_device.create_swapchain(&swapchain_ci, None)
+            }?;
 
-            //SAFETY: Images are implicitly destroyed with the swapchain, tied together via Drop
-            let images = unsafe { swapchain_device.get_swapchain_images(swapchain) }.unwrap();
+            let images =
+                //SAFETY: Images are implicitly destroyed with the swapchain, tied together via Drop
+                unsafe { swapchain_device.get_swapchain_images(swapchain) }
+                    .unwrap();
             let image_views: Vec<_> = images
                 .iter()
                 .map(|image| {
@@ -957,7 +1034,8 @@ impl Replaceable {
                                 .layer_count(1),
                         );
                     //SAFETY: Image view is destroyed before Image
-                    unsafe { device.inner.create_image_view(&ivci, None) }.unwrap()
+                    unsafe { device.inner.create_image_view(&ivci, None) }
+                        .unwrap()
                 })
                 .collect();
 
@@ -965,9 +1043,10 @@ impl Replaceable {
                 .attachment(0)
                 .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)];
 
-            let multisampling = vk::PipelineMultisampleStateCreateInfo::default()
-                .sample_shading_enable(false)
-                .rasterization_samples(vk::SampleCountFlags::TYPE_1);
+            let multisampling =
+                vk::PipelineMultisampleStateCreateInfo::default()
+                    .sample_shading_enable(false)
+                    .rasterization_samples(vk::SampleCountFlags::TYPE_1);
 
             let color_attachments = [vk::AttachmentDescription::default()
                 .format(swapchain_ci.image_format)
@@ -998,9 +1077,10 @@ impl Replaceable {
                 .subpasses(&subpasses)
                 .dependencies(&dependencies);
 
-            let pipeline_input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
-                .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
-                .primitive_restart_enable(false);
+            let pipeline_input_assembly =
+                vk::PipelineInputAssemblyStateCreateInfo::default()
+                    .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
+                    .primitive_restart_enable(false);
             let viewports = [vk::Viewport::default()
                 .width(swap_extent.width as f32)
                 .height(swap_extent.height as f32)];
@@ -1013,36 +1093,47 @@ impl Replaceable {
                 .viewports(&viewports)
                 .scissors(&scissors);
 
-            let rasterizer = vk::PipelineRasterizationStateCreateInfo::default()
-                .depth_clamp_enable(false)
-                .rasterizer_discard_enable(false)
-                .polygon_mode(vk::PolygonMode::FILL)
-                .line_width(1.0)
-                .cull_mode(vk::CullModeFlags::BACK)
-                .front_face(vk::FrontFace::CLOCKWISE)
-                .depth_bias_enable(false);
+            let rasterizer =
+                vk::PipelineRasterizationStateCreateInfo::default()
+                    .depth_clamp_enable(false)
+                    .rasterizer_discard_enable(false)
+                    .polygon_mode(vk::PolygonMode::FILL)
+                    .line_width(1.0)
+                    .cull_mode(vk::CullModeFlags::BACK)
+                    .front_face(vk::FrontFace::CLOCKWISE)
+                    .depth_bias_enable(false);
 
-            let color_blend_attachments = [vk::PipelineColorBlendAttachmentState::default()
-                .color_write_mask(vk::ColorComponentFlags::RGBA)
-                .blend_enable(false)];
+            let color_blend_attachments =
+                [vk::PipelineColorBlendAttachmentState::default()
+                    .color_write_mask(vk::ColorComponentFlags::RGBA)
+                    .blend_enable(false)];
 
-            let color_blending = vk::PipelineColorBlendStateCreateInfo::default()
-                .logic_op_enable(false)
-                .attachments(&color_blend_attachments);
+            let color_blending =
+                vk::PipelineColorBlendStateCreateInfo::default()
+                    .logic_op_enable(false)
+                    .attachments(&color_blend_attachments);
 
             //SAFETY: lifetimes are tied here
             let shader_stages_cis = unsafe { shader_stages.to_array() };
 
             let vertex_binding_descriptions = [Vertex::binding_description()];
-            let vertex_attrribute_descriptions = Vertex::attribute_description();
+            let vertex_attrribute_descriptions =
+                Vertex::attribute_description();
 
-            let pipeline_vertex_input = vk::PipelineVertexInputStateCreateInfo::default()
-                .vertex_binding_descriptions(&vertex_binding_descriptions[..])
-                .vertex_attribute_descriptions(&vertex_attrribute_descriptions[..]);
+            let pipeline_vertex_input =
+                vk::PipelineVertexInputStateCreateInfo::default()
+                    .vertex_binding_descriptions(
+                        &vertex_binding_descriptions[..],
+                    )
+                    .vertex_attribute_descriptions(
+                        &vertex_attrribute_descriptions[..],
+                    );
 
-            let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
+            let dynamic_states =
+                [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
             let pipeline_dynamic_state =
-                vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
+                vk::PipelineDynamicStateCreateInfo::default()
+                    .dynamic_states(&dynamic_states);
 
             let render_pass =
             //SAFETY: render_pass_ci must be valid, we create it
@@ -1068,19 +1159,20 @@ impl Replaceable {
                 })
                 .collect();
 
-            let graphics_pipeline_ci = vk::GraphicsPipelineCreateInfo::default()
-                .stages(&shader_stages_cis)
-                .layout(pipeline_layout.inner)
-                .vertex_input_state(&pipeline_vertex_input)
-                .input_assembly_state(&pipeline_input_assembly)
-                .viewport_state(&viewport_state)
-                .rasterization_state(&rasterizer)
-                .multisample_state(&multisampling)
-                .color_blend_state(&color_blending)
-                .dynamic_state(&pipeline_dynamic_state)
-                .layout(pipeline_layout.inner)
-                .render_pass(render_pass.inner)
-                .subpass(0);
+            let graphics_pipeline_ci =
+                vk::GraphicsPipelineCreateInfo::default()
+                    .stages(&shader_stages_cis)
+                    .layout(pipeline_layout.inner)
+                    .vertex_input_state(&pipeline_vertex_input)
+                    .input_assembly_state(&pipeline_input_assembly)
+                    .viewport_state(&viewport_state)
+                    .rasterization_state(&rasterizer)
+                    .multisample_state(&multisampling)
+                    .color_blend_state(&color_blending)
+                    .dynamic_state(&pipeline_dynamic_state)
+                    .layout(pipeline_layout.inner)
+                    .render_pass(render_pass.inner)
+                    .subpass(0);
 
             let graphics_pipeline =
             //SAFETY: CI must be valid
@@ -1110,10 +1202,63 @@ struct RawBuffer {
     parent: Arc<Device>,
     allocation: vk_mem::Allocation,
     _size: u64,
-    _allocation_info: vk_mem::AllocationInfo,
+    allocation_info: vk_mem::AllocationInfo,
 }
 
-impl RawBuffer {}
+impl RawBuffer {
+    unsafe fn new(
+        device: &Arc<Device>,
+        buffer_ci: &vk::BufferCreateInfo,
+        buffer_ai: &vk_mem::AllocationCreateInfo,
+    ) -> VkResult<Self> {
+        let (buffer, allocation) =
+            //SAFETY: Valid ci and ai
+            unsafe { device.allocator.create_buffer(buffer_ci, buffer_ai) }?;
+        let allocation_info = device.allocator.get_allocation_info(&allocation);
+        Ok(RawBuffer {
+            inner: buffer,
+            allocation,
+            _size: buffer_ci.size,
+            parent: device.clone(),
+            allocation_info,
+        })
+    }
+    //SAFETY REQUIREMENT: Buffer is large enough to hold the data
+    unsafe fn copy_to_buffer<T: bytemuck::Pod>(
+        &mut self,
+        data: &[T],
+        offset: u64,
+    ) -> VkResult<()> {
+        let mapped_memory =
+            //SAFETY: Buffer is derived from parent
+            unsafe { self.parent.allocator.map_memory(&mut self.allocation) }?;
+        //SAFETY: Buffer is large enough to hold the data
+        unsafe {
+            copy_nonoverlapping(
+                data.as_ptr() as *const u8,
+                mapped_memory.add(offset as usize),
+                size_of_val(data),
+            )
+        };
+
+        if self.parent.memory_type_info.memory_types_as_slice()
+            [self.allocation_info.memory_type as usize]
+            .property_flags
+            & vk::MemoryPropertyFlags::HOST_COHERENT
+            == vk::MemoryPropertyFlags::empty()
+        {
+            self.parent.allocator.flush_allocation(
+                &self.allocation,
+                offset,
+                size_of_val(data) as u64,
+            )?;
+        }
+
+        //SAFETY: Memory is mapped
+        unsafe { self.parent.allocator.unmap_memory(&mut self.allocation) };
+        Ok(())
+    }
+}
 
 impl Drop for RawBuffer {
     fn drop(&mut self) {
@@ -1135,7 +1280,7 @@ struct RenderData {
     render_finished_semaphores: Vec<vk::Semaphore>,
     in_flight_fences: Vec<vk::Fence>,
     main_vertex_buffers: Vec<RawBuffer>,
-
+    main_index_buffers: Vec<RawBuffer>,
     frame: usize,
     surface: Arc<Surface>,
     swapchain_device: Arc<swapchain::Device>,
@@ -1157,20 +1302,25 @@ impl RenderData {
         let swapchain_device = Arc::new(device.new_swapchain_device());
 
         let semaphore_ci = vk::SemaphoreCreateInfo::default();
-        let fence_ci = vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED);
+        let fence_ci = vk::FenceCreateInfo::default()
+            .flags(vk::FenceCreateFlags::SIGNALED);
 
-        let mut image_available_semaphores = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
-        let mut render_finished_semaphores = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
+        let mut image_available_semaphores =
+            Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
+        let mut render_finished_semaphores =
+            Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
         let mut in_flight_fences = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
 
         for _ in 0..MAX_FRAMES_IN_FLIGHT {
             image_available_semaphores.push(
                 //SAFETY: We destroy this in Swapchain::drop() before device is destroyed
-                unsafe { device.create_semaphore(&semaphore_ci, None) }.unwrap(),
+                unsafe { device.create_semaphore(&semaphore_ci, None) }
+                    .unwrap(),
             );
             render_finished_semaphores.push(
                 //SAFETY: Destroyed in Swapchain::drop()
-                unsafe { device.create_semaphore(&semaphore_ci, None) }.unwrap(),
+                unsafe { device.create_semaphore(&semaphore_ci, None) }
+                    .unwrap(),
             );
             in_flight_fences.push(
                 //SAFETY: Destroyed in Swapchain::drop()
@@ -1183,9 +1333,22 @@ impl RenderData {
             .map_err(|_| Error::CommandBufferCreation)?;
 
         let vertex_buffer_ci = vk::BufferCreateInfo::default()
-            .size(size_of::<Vertex>() as u64 * 3)
+            .size(size_of_val(&VERTICES) as u64)
             .usage(vk::BufferUsageFlags::VERTEX_BUFFER);
-        let vertex_buffer_allocation_ci = vk_mem::AllocationCreateInfo {
+        let vertex_buffer_ai = vk_mem::AllocationCreateInfo {
+            required_flags: vk::MemoryPropertyFlags::HOST_VISIBLE,
+            preferred_flags: vk::MemoryPropertyFlags::HOST_COHERENT,
+            flags: vk_mem::AllocationCreateFlags::MAPPED
+                | vk_mem::AllocationCreateFlags::HOST_ACCESS_SEQUENTIAL_WRITE,
+            usage: vk_mem::MemoryUsage::AutoPreferDevice,
+
+            ..Default::default()
+        };
+
+        let index_buffer_ci = vk::BufferCreateInfo::default()
+            .size(size_of_val(&INDICES) as u64)
+            .usage(vk::BufferUsageFlags::INDEX_BUFFER);
+        let index_buffer_ai = vk_mem::AllocationCreateInfo {
             required_flags: vk::MemoryPropertyFlags::HOST_VISIBLE,
             preferred_flags: vk::MemoryPropertyFlags::HOST_COHERENT,
             flags: vk_mem::AllocationCreateFlags::MAPPED
@@ -1196,46 +1359,21 @@ impl RenderData {
         };
 
         let mut main_vertex_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
+        let mut main_index_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
         for _ in 0..MAX_FRAMES_IN_FLIGHT {
             //SAFETY: Valid buffer create info and allocation infos
-            let (buffer, mut allocation) = unsafe {
-                device
-                    .allocator
-                    .create_buffer(&vertex_buffer_ci, &vertex_buffer_allocation_ci)
+            let vertex_buffer = unsafe {
+                RawBuffer::new(&device, &vertex_buffer_ci, &vertex_buffer_ai)
             }
             .unwrap();
-            let allocation_info = device.allocator.get_allocation_info(&allocation);
-
-            //SAFETY: Valid allocation
-            unsafe {
-                let mapping = device.allocator.map_memory(&mut allocation).unwrap();
-                std::ptr::copy_nonoverlapping(
-                    VERTICES.as_ptr() as *const u8,
-                    mapping,
-                    std::mem::size_of_val(&VERTICES),
-                );
-
-                if device.memory_type_info.memory_types_as_slice()
-                    [allocation_info.memory_type as usize]
-                    .property_flags
-                    & vk::MemoryPropertyFlags::HOST_COHERENT
-                    == vk::MemoryPropertyFlags::empty()
-                {
-                    device
-                        .allocator
-                        .flush_allocation(&allocation, 0, vk::WHOLE_SIZE)
-                        .unwrap();
-                }
-                device.allocator.unmap_memory(&mut allocation);
+            //SAFETY: Valid CI and AI
+            let index_buffer = unsafe {
+                RawBuffer::new(&device, &index_buffer_ci, &index_buffer_ai)
             }
+            .unwrap();
 
-            main_vertex_buffers.push(RawBuffer {
-                inner: buffer,
-                allocation,
-                _size: vertex_buffer_ci.size,
-                parent: device.clone(),
-                _allocation_info: allocation_info,
-            });
+            main_vertex_buffers.push(vertex_buffer);
+            main_index_buffers.push(index_buffer);
         }
 
         //SAFETY: Known to be good
@@ -1267,6 +1405,7 @@ impl RenderData {
             frame: 0,
             swapchain_device,
             main_vertex_buffers,
+            main_index_buffers,
         })
     }
 
@@ -1277,8 +1416,12 @@ impl RenderData {
         if let Some(r) = &mut self.r {
             let in_flight_fence = self.in_flight_fences[sync_index];
             let fences = [in_flight_fence];
-            let image_available_semaphore = self.image_available_semaphores[sync_index];
-            let render_finished_semaphore = self.render_finished_semaphores[sync_index];
+            let image_available_semaphore =
+                self.image_available_semaphores[sync_index];
+            let render_finished_semaphore =
+                self.render_finished_semaphores[sync_index];
+            let index_buffer = &mut self.main_index_buffers[sync_index];
+            let vertex_buffer = &mut self.main_vertex_buffers[sync_index];
             //SAFETY: fences are valid and from device
             let index = unsafe {
                 self.parent.wait_for_fences(&fences, true, u64::MAX)?;
@@ -1297,12 +1440,22 @@ impl RenderData {
             };
             let cb = self.command_buffers[sync_index].inner;
 
+            //SAFETY: vertex_buffer is long enough to hold VERTICES data
+            unsafe { vertex_buffer.copy_to_buffer(&VERTICES, 0) }.unwrap();
+
+            //SAFETY: index_buffer is long enough to hold INDICES data
+
+            unsafe { index_buffer.copy_to_buffer(&INDICES, 0) }.unwrap();
+
             //SAFETY: command buffer comes from dev. Is not in use.
             unsafe {
-                self.parent
-                    .reset_command_buffer(cb, vk::CommandBufferResetFlags::empty())?
+                self.parent.reset_command_buffer(
+                    cb,
+                    vk::CommandBufferResetFlags::empty(),
+                )?
             };
-            let command_buffer_begin_info = vk::CommandBufferBeginInfo::default();
+            let command_buffer_begin_info =
+                vk::CommandBufferBeginInfo::default();
 
             //SAFETY: We know we have exclusive access to the command buffer because it's &mut
 
@@ -1341,8 +1494,14 @@ impl RenderData {
                 self.parent.cmd_bind_vertex_buffers(
                     cb,
                     0,
-                    &[self.main_vertex_buffers[sync_index].inner],
+                    &[vertex_buffer.inner],
                     &[0],
+                );
+                self.parent.cmd_bind_index_buffer(
+                    cb,
+                    index_buffer.inner,
+                    0,
+                    vk::IndexType::UINT16,
                 );
                 self.parent.cmd_begin_render_pass(
                     cb,
@@ -1357,7 +1516,14 @@ impl RenderData {
                 self.parent.cmd_set_viewport(cb, 0, &[viewport]);
                 self.parent.cmd_set_scissor(cb, 0, &[scissor]);
 
-                self.parent.cmd_draw(cb, 3, 1, 0, 0);
+                self.parent.cmd_draw_indexed(
+                    cb,
+                    INDICES.len() as u32,
+                    1,
+                    0,
+                    0,
+                    0,
+                );
 
                 self.parent.cmd_end_render_pass(cb);
                 self.parent.end_command_buffer(cb)?;
@@ -1371,6 +1537,9 @@ impl RenderData {
             let submit_info = [vk::SubmitInfo::default()
                 .command_buffers(&cbs)
                 .wait_semaphores(&wait_semaphores)
+                .wait_dst_stage_mask(&[
+                    vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                ])
                 .signal_semaphores(&signal_semaphores)];
 
             let graphics_queue = self.graphics_queue.inner.get_mut().unwrap();
@@ -1378,9 +1547,11 @@ impl RenderData {
             //SAFETY: Exclusive access to queue, all objects in submit_info and the
             //fence is made with dev
             unsafe {
-                self.parent
-                    .inner
-                    .queue_submit(*graphics_queue, &submit_info, in_flight_fence)
+                self.parent.inner.queue_submit(
+                    *graphics_queue,
+                    &submit_info,
+                    in_flight_fence,
+                )
             }?;
             let swapchains = [r.swapchain];
             let image_indices = [index];
@@ -1391,7 +1562,9 @@ impl RenderData {
             let present_queue = self.present_queue.inner.get_mut().unwrap();
             //SAFETY: Use RWLock to synchronize access to present queue. All passed
             //stuff is derived from dev
-            unsafe { swapchain_device.queue_present(*present_queue, &present_info) }?;
+            unsafe {
+                swapchain_device.queue_present(*present_queue, &present_info)
+            }?;
 
             Ok(())
         } else {
@@ -1483,14 +1656,19 @@ impl Drop for RenderPass {
 
 impl Context {
     //TODO: Split this function the fuck up. Christ this is long
-    pub fn new(win: Arc<Window>, opts: ContextCreateOpts) -> Result<Self, Error> {
+    pub fn new(
+        win: Arc<Window>,
+        opts: ContextCreateOpts,
+    ) -> Result<Self, Error> {
         //SAFETY: You may not call vulkan functions after Entry is dropped.
         //Therefore Entry should be the last thing dropped.
         let entry = Arc::new(unsafe { Entry::load().map_err(Error::Loading) }?);
 
         let required_instance_extensions =
-            ash_window::enumerate_required_extensions(win.display_handle().unwrap().as_raw())
-                .unwrap();
+            ash_window::enumerate_required_extensions(
+                win.display_handle().unwrap().as_raw(),
+            )
+            .unwrap();
 
         let required_instance_extensions = required_instance_extensions
             .iter()
@@ -1506,7 +1684,8 @@ impl Context {
 
         let surface = Arc::new(Surface::new(&instance, &win)?);
 
-        let required_device_extensions = [khr::swapchain::NAME.to_str().to_owned().unwrap()];
+        let required_device_extensions =
+            [khr::swapchain::NAME.to_str().to_owned().unwrap()];
 
         let mut missing_instance_extensions = Vec::new();
 
@@ -1517,27 +1696,32 @@ impl Context {
             .map(|phys_dev| {
                 //SAFETY: phys_dev and surface derived from instance
                 let (score, qfp) = unsafe {
-                    evaluate_phys_dev(phys_dev, &instance, &surface, |extension_list| {
-                        for ext in required_device_extensions {
-                            //SAFETY: Lifetime of this cstr is less than
-                            //lifetime of ext
-                            if !extension_list.iter().any(|dev_ext| {
-                                dev_ext
-                                    .extension_name_as_c_str()
-                                    .unwrap()
-                                    .to_str()
-                                    .unwrap()
-                                    .eq(ext)
-                            }) {
-                                missing_instance_extensions.push(ext)
+                    evaluate_phys_dev(
+                        phys_dev,
+                        &instance,
+                        &surface,
+                        |extension_list| {
+                            for ext in required_device_extensions {
+                                //SAFETY: Lifetime of this cstr is less than
+                                //lifetime of ext
+                                if !extension_list.iter().any(|dev_ext| {
+                                    dev_ext
+                                        .extension_name_as_c_str()
+                                        .unwrap()
+                                        .to_str()
+                                        .unwrap()
+                                        .eq(ext)
+                                }) {
+                                    missing_instance_extensions.push(ext)
+                                }
                             }
-                        }
-                        if missing_instance_extensions.is_empty() {
-                            Some(0)
-                        } else {
-                            None
-                        }
-                    })
+                            if missing_instance_extensions.is_empty() {
+                                Some(0)
+                            } else {
+                                None
+                            }
+                        },
+                    )
                 };
                 (score, phys_dev, qfp)
             })
@@ -1560,8 +1744,10 @@ impl Context {
         let command_pool_ci = vk::CommandPoolCreateInfo::default()
             .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
             .queue_family_index(graphics_queue.qfi);
-        //SAFETY: Valid CI
-        let command_pool = Arc::new(unsafe { dev.create_command_pool(&command_pool_ci) }.unwrap());
+        let command_pool = Arc::new(
+            //SAFETY: Valid CI
+            unsafe { dev.create_command_pool(&command_pool_ci) }.unwrap(),
+        );
 
         let pipeline_layout_ci = Default::default();
 
@@ -1679,18 +1865,23 @@ impl QueueFamilyIndicesOpt {
     unsafe fn find(phys_dev: vk::PhysicalDevice, surface: &Surface) -> Self {
         let instance = &surface.parent_instance;
         //SAFETY: Dropped before instance is destroyed
-        let queue_families =
-            unsafe { instance.get_physical_device_queue_family_properties(phys_dev) };
+        let queue_families = unsafe {
+            instance.get_physical_device_queue_family_properties(phys_dev)
+        };
         let candidate_graphics_queues = queue_families
             .iter()
             .enumerate()
             .map(|(i, qfp)| (i as u32, qfp))
-            .filter(|(_, qfp)| (qfp.queue_flags.intersects(vk::QueueFlags::GRAPHICS)))
+            .filter(|(_, qfp)| {
+                qfp.queue_flags.intersects(vk::QueueFlags::GRAPHICS)
+            })
             .collect::<Vec<_>>();
         let graphics = candidate_graphics_queues
             .iter()
             //SAFETY: Due to the properties of enumerate, i is always in bounds
-            .filter(|(i, _)| unsafe { surface.get_physical_device_surface_support(phys_dev, *i) })
+            .filter(|(i, _)| unsafe {
+                surface.get_physical_device_surface_support(phys_dev, *i)
+            })
             .map(|(i, _)| i)
             .next()
             .or_else(|| candidate_graphics_queues.iter().map(|(i, _)| i).next())
@@ -1700,7 +1891,10 @@ impl QueueFamilyIndicesOpt {
             .iter()
             //SAFETY: graphics queue index is always in bounds
             .filter(|graphics_queue_index| unsafe {
-                surface.get_physical_device_surface_support(phys_dev, **graphics_queue_index)
+                surface.get_physical_device_surface_support(
+                    phys_dev,
+                    **graphics_queue_index,
+                )
             })
             .copied()
             .next()
@@ -1714,8 +1908,10 @@ impl QueueFamilyIndicesOpt {
                         //due to enumerate
 
                         unsafe {
-                            surface
-                                .get_physical_device_surface_support(phys_dev, *queue_family_index)
+                            surface.get_physical_device_surface_support(
+                                phys_dev,
+                                *queue_family_index,
+                            )
                         }
                     })
             });
@@ -1724,19 +1920,25 @@ impl QueueFamilyIndicesOpt {
     }
 }
 
-unsafe fn evaluate_phys_dev<F: FnOnce(&[vk::ExtensionProperties]) -> Option<u32>>(
+unsafe fn evaluate_phys_dev<
+    F: FnOnce(&[vk::ExtensionProperties]) -> Option<u32>,
+>(
     phys_dev: vk::PhysicalDevice,
     instance: &Instance,
     surface: &Surface,
     score_extensions: F,
 ) -> (u32, Option<QueueFamilyIndices>) {
     //SAFETY: phys_dev derived from instance
-    match score_extensions(&unsafe { instance.enumerate_device_extension_properties(phys_dev) }) {
+    match score_extensions(&unsafe {
+        instance.enumerate_device_extension_properties(phys_dev)
+    }) {
         Some(mut score) => {
             //SAFETY: We discard features before instance is destroyed
-            let features = unsafe { instance.get_physical_device_features(phys_dev) };
+            let features =
+                unsafe { instance.get_physical_device_features(phys_dev) };
             //SAFETY: We discard features before instance is destroyed
-            let props = unsafe { instance.get_physical_device_properties(phys_dev) };
+            let props =
+                unsafe { instance.get_physical_device_properties(phys_dev) };
 
             score += match props.device_type {
                 vk::PhysicalDeviceType::DISCRETE_GPU => 100,
@@ -1748,7 +1950,8 @@ unsafe fn evaluate_phys_dev<F: FnOnce(&[vk::ExtensionProperties]) -> Option<u32>
             let mut suitable = true;
 
             //SAFETY: Surface and phys_dev are derived from same instance
-            let queue_family_indexes = unsafe { QueueFamilyIndicesOpt::find(phys_dev, surface) };
+            let queue_family_indexes =
+                unsafe { QueueFamilyIndicesOpt::find(phys_dev, surface) };
 
             suitable &= features.geometry_shader != 0
                 && queue_family_indexes.graphics.is_some()
