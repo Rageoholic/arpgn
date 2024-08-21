@@ -1,5 +1,5 @@
 #![warn(unsafe_op_in_unsafe_fn, clippy::undocumented_unsafe_blocks)]
-use std::sync::Arc;
+use std::rc::Rc;
 
 use graphics::Context;
 use structopt::StructOpt;
@@ -27,7 +27,7 @@ struct Opt {
 #[derive(Debug)]
 enum App {
     Uninitialized(Opt),
-    Active(Arc<Window>, Context),
+    Active(Rc<Window>, Context),
     Destroyed,
 }
 
@@ -35,7 +35,7 @@ impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if let App::Uninitialized(opts) = self {
             event_loop.set_control_flow(ControlFlow::Poll);
-            let window = Arc::new(
+            let window = Rc::new(
                 event_loop
                     .create_window(
                         Window::default_attributes()
@@ -48,9 +48,9 @@ impl ApplicationHandler for App {
                     .unwrap(),
             );
             let graphics_context = match graphics::Context::new(
-                window.clone(),
+                &window,
                 graphics::ContextCreateOpts {
-                    graphics_validation_layers: opts.graphics_validation_level,
+                    _graphics_validation_layers: opts.graphics_validation_level,
                 },
             ) {
                 Ok(gc) => gc,
