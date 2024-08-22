@@ -1,22 +1,15 @@
 #![warn(unsafe_op_in_unsafe_fn, clippy::undocumented_unsafe_blocks)]
-use std::rc::Rc;
 
 use graphics::Context;
 use structopt::StructOpt;
 
 use winit::{
     application::ApplicationHandler,
-    dpi::LogicalSize,
     event::WindowEvent,
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
-    window::Window,
 };
 
 mod graphics;
-
-const DEFAULT_WINDOW_WIDTH: i32 = 1280;
-
-const DEFAULT_WINDOW_HEIGHT: i32 = 720;
 
 #[derive(Debug, StructOpt)]
 struct Opt {
@@ -27,7 +20,7 @@ struct Opt {
 #[derive(Debug)]
 enum App {
     Uninitialized(Opt),
-    Active(Rc<Window>, Context),
+    Active(Context),
     Destroyed,
 }
 
@@ -35,22 +28,12 @@ impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if let App::Uninitialized(opts) = self {
             event_loop.set_control_flow(ControlFlow::Poll);
-            let window = Rc::new(
-                event_loop
-                    .create_window(
-                        Window::default_attributes()
-                            .with_visible(false)
-                            .with_inner_size(LogicalSize {
-                                width: DEFAULT_WINDOW_WIDTH,
-                                height: DEFAULT_WINDOW_HEIGHT,
-                            }),
-                    )
-                    .unwrap(),
-            );
+
             let graphics_context = match graphics::Context::new(
-                &window,
+                event_loop,
                 graphics::ContextCreateOpts {
                     graphics_validation_layers: opts.graphics_validation_level,
+                    ..Default::default()
                 },
             ) {
                 Ok(gc) => gc,
@@ -59,8 +42,7 @@ impl ApplicationHandler for App {
                     e
                 ),
             };
-            window.set_visible(true);
-            *self = App::Active(window, graphics_context);
+            *self = App::Active(graphics_context);
         }
     }
     fn window_event(
@@ -69,17 +51,17 @@ impl ApplicationHandler for App {
         window_id: winit::window::WindowId,
         event: WindowEvent,
     ) {
-        if let App::Active(ref win, ref mut graphcs_context) = self {
-            if win.id() == window_id {
+        if let App::Active(ref mut graphics_context) = self {
+            if graphics_context.win_id() == window_id {
                 match event {
                     WindowEvent::CloseRequested => {
                         *self = App::Destroyed;
                         event_loop.exit();
                     }
                     WindowEvent::RedrawRequested => {
-                        graphcs_context.draw();
+                        graphics_context.draw();
                     }
-                    WindowEvent::Resized(_) => graphcs_context.resize(),
+                    WindowEvent::Resized(_) => graphics_context.resize(),
                     _ => {}
                 }
             }

@@ -1,6 +1,6 @@
 use std::{
     ffi::{c_void, CStr},
-    rc::Rc,
+    sync::Arc,
 };
 
 use ash::{
@@ -13,7 +13,7 @@ use super::Instance;
 
 pub(super) struct DebugMessenger {
     inner: vk::DebugUtilsMessengerEXT,
-    _parent: Rc<Instance>,
+    _parent: Arc<Instance>,
     instance: debug_utils::Instance,
 }
 
@@ -31,12 +31,12 @@ impl Drop for DebugMessenger {
 impl DebugMessenger {
     //SAFETY REQUIREMENTS: Valid ci
     pub(super) unsafe fn new(
-        parent_instance: &Rc<Instance>,
+        parent_instance: &Arc<Instance>,
         ci: &DebugUtilsMessengerCreateInfoEXT,
     ) -> VkResult<Self> {
         let debug_utils_instance = debug_utils::Instance::new(
             parent_instance.parent(),
-            parent_instance.as_inner(),
+            parent_instance.as_inner_ref(),
         );
         //SAFETY: valid ci. We know because precondition of this unsafe function
         unsafe { debug_utils_instance.create_debug_utils_messenger(ci, None) }
