@@ -9,8 +9,10 @@ pub(super) struct Swapchain {
     inner: vk::SwapchainKHR,
     //NOTE: Exist for RAII reasons. These will keep the device and surface open
     //until this drops
-    _parent_device: Arc<Device>,
+    parent_device: Arc<Device>,
     _parent_surface: Arc<Surface>,
+    _format: vk::SurfaceFormatKHR,
+    image_views: Vec<vk::ImageView>,
 }
 
 impl Swapchain {
@@ -109,10 +111,45 @@ impl Swapchain {
 
         //SAFETY: Valid ci. Known because we did it
         let inner = unsafe { swapchain_device.create_swapchain(&ci, None) }?;
+
+        let swapchain_images =
+            //SAFETY: Should always be good
+            unsafe { swapchain_device.get_swapchain_images(inner) }
+            .expect("Got a swapchain with no images?");
+
+        let mut image_views = Vec::with_capacity(swapchain_images.len());
+
+        for image in swapchain_images {
+            let components = vk::ComponentMapping::default();
+            let subresource_range = vk::ImageSubresourceRange::default()
+                .aspect_mask(vk::ImageAspectFlags::COLOR)
+                .base_mip_level(0)
+                .level_count(1)
+                .base_array_layer(0)
+                .layer_count(1);
+            let image_view_ci = vk::ImageViewCreateInfo::default()
+                .components(components)
+                .subresource_range(subresource_range)
+                .format(format.format)
+                .view_type(vk::ImageViewType::TYPE_2D)
+                .image(image);
+            //SAFETY: We know image_view_ci is valid
+            let image_view = unsafe {
+                device
+                    .as_inner_ref()
+                    .create_image_view(&image_view_ci, None)
+            }
+            .unwrap();
+
+            image_views.push(image_view);
+        }
+
         Ok(Swapchain {
             inner,
             swapchain_device,
-            _parent_device: device.clone(),
+            image_views,
+            _format: format,
+            parent_device: device.clone(),
             _parent_surface: surface.clone(),
         })
     }
@@ -122,6 +159,14 @@ impl Drop for Swapchain {
     fn drop(&mut self) {
         //SAFETY: We made this swapchain in new, which makes it with the same
         //swapchain_device we're using to destroy it now
-        unsafe { self.swapchain_device.destroy_swapchain(self.inner, None) }
+        unsafe {
+            for iv in &self.image_views {
+                self.parent_device
+                    .as_inner_ref()
+                    .destroy_image_view(*iv, None);
+            }
+            self.image_views.clear();
+            self.swapchain_device.destroy_swapchain(self.inner, None);
+        }
     }
 }
