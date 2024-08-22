@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use ash::{prelude::VkResult, vk};
 use winit::{
+    dpi::PhysicalSize,
     raw_window_handle::{HasDisplayHandle, HasWindowHandle},
     window::Window,
 };
@@ -13,7 +14,7 @@ pub(super) struct Surface {
     surface_instance: ash::khr::surface::Instance,
     //These are here to ensure these are dropped *after* the surface
     _parent_instance: Arc<Instance>,
-    _parent_window: Arc<Window>,
+    parent_window: Arc<Window>,
 }
 
 impl Drop for Surface {
@@ -47,7 +48,7 @@ impl Surface {
             surface,
             surface_instance,
             _parent_instance: instance.clone(),
-            _parent_window: win.clone(),
+            parent_window: win.clone(),
         })
     }
     //SAFETY REQUIREMENTS: phys_dev must be derived from same instance as
@@ -68,4 +69,50 @@ impl Surface {
         }
         .unwrap()
     }
+
+    pub unsafe fn get_compatible_swapchain_info(
+        &self,
+        phys_dev: vk::PhysicalDevice,
+    ) -> VkResult<SwapchainInfo> {
+        //SAFETY: phys_dev is derived from same parent instance as surface
+        let capabilities = unsafe {
+            self.surface_instance
+                .get_physical_device_surface_capabilities(
+                    phys_dev,
+                    self.surface,
+                )
+        }?;
+        //SAFETY: phys_dev is derived from same parent instance as surface
+        let formats = unsafe {
+            self.surface_instance
+                .get_physical_device_surface_formats(phys_dev, self.surface)
+        }?;
+
+        //SAFETY: phys_dev is derived from same parent instance as surface
+        let present_modes = unsafe {
+            self.surface_instance
+                .get_physical_device_surface_present_modes(
+                    phys_dev,
+                    self.surface,
+                )?
+        };
+
+        Ok(SwapchainInfo {
+            capabilities,
+            formats,
+            present_modes,
+        })
+    }
+    pub fn get_size(&self) -> PhysicalSize<u32> {
+        self.parent_window.inner_size()
+    }
+    pub fn get_inner(&self) -> vk::SurfaceKHR {
+        self.surface
+    }
+}
+
+pub struct SwapchainInfo {
+    pub capabilities: vk::SurfaceCapabilitiesKHR,
+    pub present_modes: Vec<vk::PresentModeKHR>,
+    pub formats: Vec<vk::SurfaceFormatKHR>,
 }

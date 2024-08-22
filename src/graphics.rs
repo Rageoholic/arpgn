@@ -10,6 +10,7 @@ use structopt::StructOpt;
 use strum::EnumString;
 
 use surface::Surface;
+use swapchain::Swapchain;
 use winit::{
     dpi::{LogicalSize, Size},
     event_loop::ActiveEventLoop,
@@ -25,6 +26,7 @@ mod debug_messenger;
 mod device;
 mod instance;
 mod surface;
+mod swapchain;
 
 const _MAX_FRAMES_IN_FLIGHT: usize = 2;
 
@@ -32,6 +34,7 @@ struct ContextNonDebug {
     _entry: Arc<ash::Entry>,
     _instance: Arc<Instance>,
     _debug_messenger: Option<DebugMessenger>,
+    _swapchain: Swapchain,
 }
 
 impl Debug for ContextNonDebug {
@@ -74,9 +77,9 @@ pub enum Error {
     #[allow(dead_code)]
     _MissingMandatoryExtensions(Vec<String>),
     NoSuitableDevice,
-    _DeviceCreation,
+    DeviceCreation,
     SurfaceCreation,
-    _SwapchainCreation,
+    SwapchainCreation,
     _CommandBufferCreation,
     #[allow(dead_code)]
     Unknown(String),
@@ -287,10 +290,25 @@ impl Context {
             //isn't necessary but it's like. 2 values in the struct that would
             //have to be zeroed anyways. Who cares.
             .enabled_layer_names(&layer_names);
-        //SAFETY: valid ci and phys_dev is derived from instance. We accomplished these
-        let _device = unsafe {
-            Device::new(&instance, scored_phys_dev.phys_dev, &dev_ci)
-        };
+        let device = Arc::new(
+            //SAFETY: valid ci and phys_dev is derived from instance. We
+            //accomplished these
+            unsafe {
+                Device::new(&instance, scored_phys_dev.phys_dev, &dev_ci)
+            }
+            .map_err(|_| Error::DeviceCreation)?,
+        );
+
+        //SAFETY: Device and surface are from the same instance
+        let swapchain = unsafe {
+            Swapchain::new(
+                &device,
+                &surface,
+                scored_phys_dev.graphics_queue_index,
+                scored_phys_dev.present_queue_index,
+            )
+        }
+        .map_err(|_| Error::SwapchainCreation)?;
 
         Ok(Context {
             win,
@@ -298,6 +316,7 @@ impl Context {
                 _entry: entry,
                 _instance: instance,
                 _debug_messenger: debug_messenger,
+                _swapchain: swapchain,
             },
         })
     }
@@ -398,30 +417,48 @@ unsafe fn evaluate_physical_device(
                 })
                 .map(|(i, _)| i as u32)
         });
-    graphics_queue_index.and_then(|graphics_queue_index| {
-        present_queue_index.map(|present_queue_index| {
-            //Weight CPUs more highly based on what type they are. If unknown,
-            //just return some weird low value but better than CPU
-            let device_type_score = match properties.props.device_type {
-                vk::PhysicalDeviceType::DISCRETE_GPU => 1000,
-                vk::PhysicalDeviceType::INTEGRATED_GPU => 500,
-                vk::PhysicalDeviceType::CPU => 0,
-                _ => 100,
-            };
-            //If multiple of same category, pick the one with a shared graphics and presentation queue
-            let queue_score = if graphics_queue_index == present_queue_index {
-                100
-            } else {
-                50
-            };
-            ScoredPhysDev {
-                score: queue_score + device_type_score,
-                phys_dev,
-                graphics_queue_index,
-                present_queue_index,
-            }
+    if properties.extensions.iter().any(|ext| {
+        ash::khr::swapchain::NAME.eq(ext.extension_name_as_c_str().expect(
+            "It'd be weird if we got an extension that wasn't a valid cstr",
+        ))
+        //SAFETY: phys_dev from same source as surface
+    }) && unsafe {
+        surface.get_compatible_swapchain_info(phys_dev).ok().map_or(
+            false,
+            |swap_info| {
+                !swap_info.formats.is_empty()
+                    && !swap_info.present_modes.is_empty()
+            },
+        )
+    } {
+        graphics_queue_index.and_then(|graphics_queue_index| {
+            present_queue_index.map(|present_queue_index| {
+                //Weight CPUs more highly based on what type they are. If unknown,
+                //just return some weird low value but better than CPU
+                let device_type_score = match properties.props.device_type {
+                    vk::PhysicalDeviceType::DISCRETE_GPU => 1000,
+                    vk::PhysicalDeviceType::INTEGRATED_GPU => 500,
+                    vk::PhysicalDeviceType::CPU => 0,
+                    _ => 100,
+                };
+                //If multiple of same category, pick the one with a shared graphics and presentation queue
+                let queue_score = if graphics_queue_index == present_queue_index
+                {
+                    100
+                } else {
+                    50
+                };
+                ScoredPhysDev {
+                    score: queue_score + device_type_score,
+                    phys_dev,
+                    graphics_queue_index,
+                    present_queue_index,
+                }
+            })
         })
-    })
+    } else {
+        None
+    }
 }
 
 fn graphics_validation_sev_to_debug_utils_flags(

@@ -9,9 +9,12 @@ use ash::{
     vk::{self},
 };
 
+use super::instance::Instance;
+
 pub struct Device {
     inner: ash::Device,
-    _parent: Arc<super::Instance>,
+    phys_dev: vk::PhysicalDevice,
+    parent: Arc<super::Instance>,
     _queue_families: HashMap<u32, Vec<RwLock<vk::Queue>>>,
 }
 
@@ -62,7 +65,8 @@ impl Device {
 
                 Self {
                     inner,
-                    _parent: instance.clone(),
+                    phys_dev,
+                    parent: instance.clone(),
                     _queue_families: queue_families,
                 }
             })
@@ -92,6 +96,17 @@ impl Device {
         // where you can submit to a queue.
         unsafe { self.inner.queue_submit(*lock, submits, fence) }
             .map_err(_QueueSubmitError::Vulkan)
+    }
+    pub(super) fn get_physical_device_handle(&self) -> vk::PhysicalDevice {
+        self.phys_dev
+    }
+
+    pub(super) fn parent(&self) -> &Arc<Instance> {
+        &self.parent
+    }
+
+    pub (super )fn as_inner_ref(&self) -> &ash::Device{
+        &self.inner
     }
 }
 pub enum _QueueSubmitError {

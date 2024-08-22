@@ -52,9 +52,14 @@ impl Instance {
         let props =
         //SAFETY: phys_dev from self
             unsafe { self.inner.get_physical_device_properties(phys_dev) };
-        //SAFETY: phys_dev from self
         let features =
+            //SAFETY: phys_dev from self
             unsafe { self.inner.get_physical_device_features(phys_dev) };
+        //SAFETY: phys_dev_from self
+        let extensions = unsafe {
+            self.inner.enumerate_device_extension_properties(phys_dev)
+        }
+        .unwrap();
         //SAFETY: phys_dev from self
         let queue_families = unsafe {
             self.inner
@@ -64,6 +69,7 @@ impl Instance {
             props,
             _features: features,
             queue_families,
+            extensions,
         }
     }
 }
@@ -72,4 +78,5 @@ pub struct PhysDevProps {
     pub props: vk::PhysicalDeviceProperties,
     pub _features: vk::PhysicalDeviceFeatures,
     pub queue_families: Vec<vk::QueueFamilyProperties>,
+    pub extensions: Vec<vk::ExtensionProperties>,
 }

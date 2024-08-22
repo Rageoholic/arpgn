@@ -1,0 +1,127 @@
+use std::{cmp::min, sync::Arc};
+
+use ash::{prelude::VkResult, vk};
+
+use super::{device::Device, Surface};
+
+pub(super) struct Swapchain {
+    swapchain_device: ash::khr::swapchain::Device,
+    inner: vk::SwapchainKHR,
+    //NOTE: Exist for RAII reasons. These will keep the device and surface open
+    //until this drops
+    _parent_device: Arc<Device>,
+    _parent_surface: Arc<Surface>,
+}
+
+impl Swapchain {
+    //SAFETY REQUIREMENT: device and surface are from the same instance
+    pub unsafe fn new(
+        device: &Arc<Device>,
+        surface: &Arc<Surface>,
+        graphics_qfi: u32,
+        present_qfi: u32,
+    ) -> VkResult<Self> {
+        //SAFETY: surface and device are created from the same instance
+        let swap_info = unsafe {
+            surface.get_compatible_swapchain_info(
+                device.get_physical_device_handle(),
+            )
+        }?;
+        let format = swap_info
+            .formats
+            .iter()
+            .find(|format| {
+                format.color_space == vk::ColorSpaceKHR::SRGB_NONLINEAR
+                    && format.format == vk::Format::B8G8R8A8_SRGB
+            })
+            .copied()
+            //NOTE: Crashing because somehow we got here with no available
+            //formats is fine
+            .unwrap_or(swap_info.formats[0]);
+        let present_mode = swap_info
+            .present_modes
+            .iter()
+            .copied()
+            .find(|pm| *pm == vk::PresentModeKHR::MAILBOX)
+            .or_else(|| {
+                swap_info
+                    .present_modes
+                    .iter()
+                    .copied()
+                    .find(|pm| *pm == vk::PresentModeKHR::IMMEDIATE)
+            })
+            .unwrap_or(vk::PresentModeKHR::FIFO);
+        let win_size = surface.get_size();
+
+        let swap_extent =
+            if swap_info.capabilities.current_extent.width != u32::MAX {
+                swap_info.capabilities.current_extent
+            } else {
+                vk::Extent2D {
+                    width: win_size.width.clamp(
+                        swap_info.capabilities.min_image_extent.width,
+                        swap_info.capabilities.max_image_extent.width,
+                    ),
+                    height: win_size.height.clamp(
+                        swap_info.capabilities.min_image_extent.height,
+                        swap_info.capabilities.max_image_extent.height,
+                    ),
+                }
+            };
+
+        let image_count = min(
+            swap_info.capabilities.min_image_count + 1,
+            if swap_info.capabilities.max_image_count != 0 {
+                swap_info.capabilities.max_image_count
+            } else {
+                u32::MAX
+            },
+        );
+        let mut indices = Vec::with_capacity(2);
+        let sharing_mode = if graphics_qfi == present_qfi {
+            vk::SharingMode::EXCLUSIVE
+        } else {
+            indices.push(graphics_qfi);
+            indices.push(present_qfi);
+            vk::SharingMode::CONCURRENT
+        };
+
+        let ci = vk::SwapchainCreateInfoKHR::default()
+            .surface(surface.get_inner())
+            .min_image_count(image_count)
+            .image_format(format.format)
+            .image_color_space(format.color_space)
+            .image_extent(swap_extent)
+            .image_array_layers(1)
+            .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT)
+            .image_sharing_mode(sharing_mode)
+            .queue_family_indices(&indices)
+            .pre_transform(swap_info.capabilities.current_transform)
+            .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
+            .present_mode(present_mode)
+            .clipped(true)
+            .old_swapchain(vk::SwapchainKHR::null());
+
+        let swapchain_device = ash::khr::swapchain::Device::new(
+            device.parent().as_inner_ref(),
+            device.as_inner_ref(),
+        );
+
+        //SAFETY: Valid ci. Known because we did it
+        let inner = unsafe { swapchain_device.create_swapchain(&ci, None) }?;
+        Ok(Swapchain {
+            inner,
+            swapchain_device,
+            _parent_device: device.clone(),
+            _parent_surface: surface.clone(),
+        })
+    }
+}
+
+impl Drop for Swapchain {
+    fn drop(&mut self) {
+        //SAFETY: We made this swapchain in new, which makes it with the same
+        //swapchain_device we're using to destroy it now
+        unsafe { self.swapchain_device.destroy_swapchain(self.inner, None) }
+    }
+}
