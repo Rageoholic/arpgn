@@ -50,7 +50,7 @@ impl ApplicationHandler for App {
             let graphics_context = match graphics::Context::new(
                 &window,
                 graphics::ContextCreateOpts {
-                    _graphics_validation_layers: opts.graphics_validation_level,
+                    graphics_validation_layers: opts.graphics_validation_level,
                 },
             ) {
                 Ok(gc) => gc,
