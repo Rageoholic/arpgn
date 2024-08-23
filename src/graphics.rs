@@ -1,10 +1,11 @@
 use std::{
-    collections::HashSet, ffi::CStr, fmt::Debug, path::Path, str::FromStr,
-    sync::Arc,
+    collections::HashSet, ffi::CStr, fmt::Debug, mem::offset_of, path::Path,
+    str::FromStr, sync::Arc,
 };
 
 use ash::{vk, LoadingError};
 use debug_messenger::DebugMessenger;
+use descriptor_set_layout::DescriptorSetLayout;
 use device::Device;
 use instance::Instance;
 
@@ -15,6 +16,7 @@ use strum::EnumString;
 
 use surface::Surface;
 use swapchain::Swapchain;
+use vek::Vec3;
 use winit::{
     dpi::{LogicalSize, Size},
     event_loop::ActiveEventLoop,
@@ -27,8 +29,10 @@ const DEFAULT_WINDOW_WIDTH: u32 = 1280;
 const DEFAULT_WINDOW_HEIGHT: u32 = 720;
 
 mod debug_messenger;
+mod descriptor_set_layout;
 mod device;
 mod instance;
+mod pipeline_layout;
 mod shader_module;
 mod surface;
 mod swapchain;
@@ -48,6 +52,38 @@ impl Debug for ContextNonDebug {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("GraphicsContextNonDebug")
             .finish_non_exhaustive()
+    }
+}
+
+struct Vertex {
+    pos: vek::Vec2<f32>,
+    col: Vec3<f32>,
+}
+impl Vertex {
+    fn vertex_attribute_descriptions(
+        binding: u32,
+    ) -> [vk::VertexInputAttributeDescription; 2] {
+        [
+            vk::VertexInputAttributeDescription::default()
+                .location(0)
+                .binding(binding)
+                .format(vk::Format::R32G32_SFLOAT)
+                .offset(offset_of!(Vertex, pos) as u32),
+            vk::VertexInputAttributeDescription::default()
+                .location(0)
+                .binding(binding)
+                .offset(offset_of!(Vertex, col) as u32)
+                .format(vk::Format::R32G32B32_SFLOAT),
+        ]
+    }
+    fn vertex_binding_descriptions(
+        binding: u32,
+        input_rate: vk::VertexInputRate,
+    ) -> [vk::VertexInputBindingDescription; 1] {
+        [vk::VertexInputBindingDescription::default()
+            .binding(binding)
+            .stride(size_of::<Vertex>() as u32)
+            .input_rate(input_rate)]
     }
 }
 
@@ -352,7 +388,78 @@ impl Context {
                     Err(ContextCreationError::ShaderLoading(vec![e1, e2]))
                 }
             }?;
+        let vertex_attribute_descriptions =
+            Vertex::vertex_attribute_descriptions(0);
+        let vertex_binding_descriptions =
+            Vertex::vertex_binding_descriptions(0, vk::VertexInputRate::VERTEX);
+        let _vertex_input_state =
+            vk::PipelineVertexInputStateCreateInfo::default()
+                .vertex_attribute_descriptions(&vertex_attribute_descriptions)
+                .vertex_binding_descriptions(&vertex_binding_descriptions);
+        let _input_assembly_statee =
+            vk::PipelineInputAssemblyStateCreateInfo::default()
+                .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
+                .primitive_restart_enable(false);
+        let _input_assembly_state =
+            vk::PipelineInputAssemblyStateCreateInfo::default()
+                .topology(vk::PrimitiveTopology::TRIANGLE_STRIP)
+                .primitive_restart_enable(false);
 
+        let viewports = [swapchain.default_viewport()];
+        let scissors = [swapchain.default_scissor()];
+
+        let _viewport_state = vk::PipelineViewportStateCreateInfo::default()
+            .viewports(&viewports)
+            .scissors(&scissors);
+
+        let _rasterization_state =
+            vk::PipelineRasterizationStateCreateInfo::default()
+                .depth_clamp_enable(false)
+                .rasterizer_discard_enable(false)
+                .polygon_mode(vk::PolygonMode::FILL)
+                .line_width(1.0)
+                .cull_mode(vk::CullModeFlags::BACK)
+                .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
+                .depth_bias_enable(false);
+        let _multisampling_state =
+            vk::PipelineMultisampleStateCreateInfo::default();
+
+        let attachments = [vk::PipelineColorBlendAttachmentState::default()
+            .dst_color_blend_factor(vk::BlendFactor::ONE)
+            .color_write_mask(vk::ColorComponentFlags::RGBA)];
+        let _color_blend_state =
+            vk::PipelineColorBlendStateCreateInfo::default()
+                .attachments(&attachments)
+                .logic_op_enable(false)
+                .logic_op(vk::LogicOp::COPY)
+                .blend_constants([0.0, 0.0, 0.0, 0.0]);
+        let descriptor_set_layout_ci =
+            vk::DescriptorSetLayoutCreateInfo::default();
+
+        let descriptor_set_layout =
+            //SAFETY: valid ci
+            unsafe { DescriptorSetLayout::new(&device, &descriptor_set_layout_ci) }
+                .map_err(|err| {
+                    ContextCreationError::Unknown(format!(
+                "Couldn't make descriptor set layout. vk Error code :{}",
+                err
+            ))
+                })?;
+        let descriptor_set_layouts = [descriptor_set_layout.inner()];
+
+        let pipeline_layout_ci = vk::PipelineLayoutCreateInfo::default()
+            .set_layouts(&descriptor_set_layouts);
+
+        //SAFETY: Valid ci
+        let _pipeline_layout = unsafe {
+            pipeline_layout::PipelineLayout::new(&device, &pipeline_layout_ci)
+        }
+        .map_err(|err| {
+            ContextCreationError::Unknown(format!(
+                "Could not create pipeline layout. Error code {}",
+                err
+            ))
+        });
         Ok(Context {
             win,
             _nd: ContextNonDebug {
