@@ -1,6 +1,7 @@
 #![warn(unsafe_op_in_unsafe_fn, clippy::undocumented_unsafe_blocks)]
+#![allow(clippy::redundant_closure)]
 
-use graphics::Context;
+use graphics::{Context, ShaderLoadingError};
 use structopt::StructOpt;
 
 use winit::{
@@ -37,6 +38,34 @@ impl ApplicationHandler for App {
                 },
             ) {
                 Ok(gc) => gc,
+                Err(graphics::ContextCreationError::ShaderLoading(errs)) => {
+                    for err in errs {
+                        match err {
+                            ShaderLoadingError::FileLoad(
+                                file_name,
+                                file_error,
+                            ) => {
+                                println!(
+                                    "{} not found: {}",
+                                    file_name.to_string_lossy(),
+                                    file_error
+                                );
+                            }
+                            ShaderLoadingError::ShaderCompilation(
+                                compile_error,
+                            ) => {
+                                print!("{}", compile_error);
+                            }
+                            ShaderLoadingError::MemoryExhaustion => {
+                                print!(
+                                    "Memory exhausted while loading shaders"
+                                );
+                            }
+                        }
+                    }
+                    event_loop.exit();
+                    return;
+                }
                 Err(e) => panic!(
                     "Encountered error creating graphics context {:?}",
                     e
@@ -65,6 +94,11 @@ impl ApplicationHandler for App {
                     _ => {}
                 }
             }
+        }
+    }
+    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+        if let App::Active(ref mut graphics_context) = self {
+            graphics_context.draw()
         }
     }
 }

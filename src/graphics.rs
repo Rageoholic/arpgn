@@ -1,11 +1,15 @@
 use std::{
-    collections::HashSet, ffi::CStr, fmt::Debug, str::FromStr, sync::Arc,
+    collections::HashSet, ffi::CStr, fmt::Debug, path::Path, str::FromStr,
+    sync::Arc,
 };
 
 use ash::{vk, LoadingError};
 use debug_messenger::DebugMessenger;
 use device::Device;
 use instance::Instance;
+
+use shader_module::ShaderModule;
+use shaderc::ShaderKind;
 use structopt::StructOpt;
 use strum::EnumString;
 
@@ -25,10 +29,13 @@ const DEFAULT_WINDOW_HEIGHT: u32 = 720;
 mod debug_messenger;
 mod device;
 mod instance;
+mod shader_module;
 mod surface;
 mod swapchain;
 
 const _MAX_FRAMES_IN_FLIGHT: usize = 2;
+
+pub type ShaderLoadingError = shader_module::Error;
 
 struct ContextNonDebug {
     _entry: Arc<ash::Entry>,
@@ -69,9 +76,9 @@ pub enum ValidationLevel {
     Verbose,
 }
 
+#[allow(dead_code)]
 #[derive(Debug)]
-pub enum Error {
-    #[allow(dead_code)]
+pub enum ContextCreationError {
     Loading(LoadingError),
     InstanceCreation,
     #[allow(dead_code)]
@@ -85,6 +92,8 @@ pub enum Error {
     Unknown(String),
     #[allow(dead_code)]
     WindowCreation(winit::error::OsError),
+    ShaderCompilerCreation,
+    ShaderLoading(Vec<shader_module::Error>),
 }
 
 const KHRONOS_VALIDATION_LAYER_NAME: &CStr = c"VK_LAYER_KHRONOS_validation";
@@ -94,11 +103,11 @@ impl Context {
     pub fn new(
         event_loop: &ActiveEventLoop,
         mut opts: ContextCreateOpts,
-    ) -> Result<Self, Error> {
+    ) -> Result<Self, ContextCreationError> {
         let entry =
         //SAFETY: Must be dropped *after* instance, which we accomplish by
         //having instance hold on to a ref counted pointer to entry
-            Arc::new(unsafe { ash::Entry::load().map_err(Error::Loading) }?);
+            Arc::new(unsafe { ash::Entry::load().map_err(ContextCreationError::Loading) }?);
         //SAFETY: Should be good?
         let vk_version = match unsafe { entry.try_enumerate_instance_version() }
         {
@@ -119,7 +128,7 @@ impl Context {
         //SAFETY: Should always be good
             unsafe { entry.enumerate_instance_extension_properties(None) }
                 .map_err(|_| {
-                    Error::Unknown(String::from_str(
+                    ContextCreationError::Unknown(String::from_str(
                         "Couldn't load instance extensions",
                     ).unwrap())
                 })?;
@@ -157,7 +166,7 @@ impl Context {
         }
 
         if !missing_mandatory_extensions.is_empty() {
-            return Err(Error::_MissingMandatoryExtensions(
+            return Err(ContextCreationError::_MissingMandatoryExtensions(
                 missing_mandatory_extensions,
             ));
         }
@@ -217,7 +226,7 @@ impl Context {
             //SAFETY: Valid ci. We know because we made it and none of the lifetimes
             //involved have expired
             unsafe { Instance::new(&entry, &instance_create_info) }
-                .map_err(|_| Error::InstanceCreation)?,
+                .map_err(|_| ContextCreationError::InstanceCreation)?,
         );
 
         let debug_messenger = if opts.graphics_validation_layers
@@ -243,12 +252,12 @@ impl Context {
                         ),
                     ),
                 )
-                .map_err(Error::WindowCreation)?,
+                .map_err(ContextCreationError::WindowCreation)?,
         );
 
         let surface = Arc::new(
             surface::Surface::new(&instance, &win)
-                .map_err(|_| Error::SurfaceCreation)?,
+                .map_err(|_| ContextCreationError::SurfaceCreation)?,
         );
 
         let physical_devices = instance
@@ -268,7 +277,7 @@ impl Context {
                     best_found
                 }
             })
-            .ok_or(Error::NoSuitableDevice)?;
+            .ok_or(ContextCreationError::NoSuitableDevice)?;
         //TODO: Properly check for these extensions
         let device_extension_names = vec![ash::khr::swapchain::NAME.as_ptr()];
         let mut queue_family_indices = HashSet::with_capacity(2);
@@ -296,7 +305,7 @@ impl Context {
             unsafe {
                 Device::new(&instance, scored_phys_dev.phys_dev, &dev_ci)
             }
-            .map_err(|_| Error::DeviceCreation)?,
+            .map_err(|_| ContextCreationError::DeviceCreation)?,
         );
 
         //SAFETY: Device and surface are from the same instance
@@ -308,7 +317,41 @@ impl Context {
                 scored_phys_dev.present_queue_index,
             )
         }
-        .map_err(|_| Error::SwapchainCreation)?;
+        .map_err(|_| ContextCreationError::SwapchainCreation)?;
+
+        let shader_compiler = shaderc::Compiler::new()
+            .ok_or(ContextCreationError::ShaderCompilerCreation)?;
+
+        let vert_shader_path = Path::new("shaders/shader.vert");
+
+        let vert_shader_mod = ShaderModule::new(
+            &device,
+            &shader_compiler,
+            vert_shader_path,
+            ShaderKind::Vertex,
+            "main",
+            None,
+        );
+        let frag_shader_path = Path::new("shaders/shader.frag");
+        let frag_shader_mod = ShaderModule::new(
+            &device,
+            &shader_compiler,
+            frag_shader_path,
+            ShaderKind::Fragment,
+            "main",
+            None,
+        );
+
+        let (_vert_shader_mod, _frag_shader_mod) =
+            match (vert_shader_mod, frag_shader_mod) {
+                (Ok(mod1), Ok(mod2)) => Ok((mod1, mod2)),
+                (Err(e), Ok(_)) | (Ok(_), Err(e)) => {
+                    Err(ContextCreationError::ShaderLoading(vec![e]))
+                }
+                (Err(e1), Err(e2)) => {
+                    Err(ContextCreationError::ShaderLoading(vec![e1, e2]))
+                }
+            }?;
 
         Ok(Context {
             win,
