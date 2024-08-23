@@ -1,3 +1,10 @@
+// FILE SAFETY REQUIREMENTS
+// * Only create DebugMessenger in DebugMessenger::new
+
+// * Do not destroy inner except in the Drop implementation
+
+// * We must hold an Arc to our parent instance
+
 use std::{
     ffi::{c_void, CStr},
     sync::Arc,

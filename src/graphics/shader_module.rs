@@ -1,6 +1,11 @@
 //FILE SAFETY INVARIANTS
 // * Do not expose ShaderModule::inner
+
 // * Only create in new and only destroy ShaderModule::inner in drop
+
+// * Do not destroy if you get an inner ref
+
+// * Do not destroy except in drop
 
 use std::{
     io::Read,

@@ -1,3 +1,10 @@
+// FILE SAFETY REQUIREMENTS
+// * Only create Surface in Surface::new
+
+// * Do not destroy inner except in the Drop implementation
+
+// * We must hold an Arc to our parent window and instance
+
 use std::sync::Arc;
 
 use ash::{prelude::VkResult, vk};

@@ -1,3 +1,15 @@
+// FILE SAFETY INVARIANTS
+// * We are dropped after the Instance passed to us in Device::new. This is
+//   assured by holding onto an Arc to it, since Arc won't drop it until the
+//   last reference gets dropped.
+
+// * We only create Device in Device::new. Do not construct an instance in
+//   any other way
+
+// * Do not destroy the inner until drop()
+
+// * NEVER EVER EVER CALL `destroy_device` ON THE RETURN FROM `as_inner_ref`
+
 use core::slice;
 use std::{
     collections::HashMap,
@@ -105,7 +117,8 @@ impl Device {
         &self.parent
     }
 
-    pub (super )fn as_inner_ref(&self) -> &ash::Device{
+    /// NEVER EVER CALL `destroy_device` ON THE RETURN VALUE FROM THIS
+    pub(super) fn as_inner_ref(&self) -> &ash::Device {
         &self.inner
     }
 }

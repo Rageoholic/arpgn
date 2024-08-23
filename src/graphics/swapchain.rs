@@ -1,3 +1,10 @@
+// FILE SAFETY REQUIREMENTS
+// * Only create Swapchain in Swapchain::new
+
+// * Do not destroy inner except in the Drop implementation
+
+// * We must hold an Arc to our parent surface and device
+
 use std::{cmp::min, sync::Arc};
 
 use ash::{prelude::VkResult, vk};

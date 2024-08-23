@@ -1,3 +1,15 @@
+// FILE SAFETY INVARIANTS
+// * We are dropped after the Entry passed to us in Instance::new. This is
+//   assured by holding onto an Arc to it, since Arc won't drop it until the
+//   last reference gets dropped.
+
+// * We only create Instance in Instance::new. Do not construct an instance in
+//   any other way
+
+// * NEVER EVER EVER CALL `destroy_device` ON THE RETURN FROM `as_inner_ref`
+
+// * Do not destroy inner except in drop()
+
 use std::sync::Arc;
 
 use ash::{
@@ -34,6 +46,8 @@ impl Instance {
     pub(super) fn parent(&self) -> &Arc<Entry> {
         &self.parent
     }
+
+    /// NEVER EVER CALL `destroy_instance` ON THE RETURN VALUE FROM THIS
     pub(super) fn as_inner_ref(&self) -> &ash::Instance {
         &self.inner
     }
