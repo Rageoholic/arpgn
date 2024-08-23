@@ -54,16 +54,25 @@ impl ApplicationHandler for App {
                             ShaderLoadingError::ShaderCompilation(
                                 compile_error,
                             ) => {
-                                print!("{}", compile_error);
+                                eprint!("{}", compile_error);
                             }
                             ShaderLoadingError::MemoryExhaustion => {
-                                print!(
+                                eprint!(
                                     "Memory exhausted while loading shaders"
                                 );
                             }
                         }
                     }
                     event_loop.exit();
+                    return;
+                }
+                Err(graphics::ContextCreationError::UnknownVulkan(
+                    when,
+                    code,
+                )) => {
+                    eprintln!("Unknown Vulkan Error during {}: {}", when, code);
+                    event_loop.exit();
+
                     return;
                 }
                 Err(e) => panic!(

@@ -1,10 +1,11 @@
 use std::{
     collections::HashSet, ffi::CStr, fmt::Debug, mem::offset_of, path::Path,
-    str::FromStr, sync::Arc,
+    sync::Arc,
 };
 
 use ash::{vk, LoadingError};
 use debug_messenger::DebugMessenger;
+use descriptor::DescriptorSets;
 use descriptor_set_layout::DescriptorSetLayout;
 use device::Device;
 use instance::Instance;
@@ -16,7 +17,7 @@ use strum::EnumString;
 
 use surface::Surface;
 use swapchain::Swapchain;
-use vek::Vec3;
+use vek::{Mat4, Vec3};
 use winit::{
     dpi::{LogicalSize, Size},
     event_loop::ActiveEventLoop,
@@ -29,6 +30,7 @@ const DEFAULT_WINDOW_WIDTH: u32 = 1280;
 const DEFAULT_WINDOW_HEIGHT: u32 = 720;
 
 mod debug_messenger;
+mod descriptor;
 mod descriptor_set_layout;
 mod device;
 mod instance;
@@ -37,7 +39,7 @@ mod shader_module;
 mod surface;
 mod swapchain;
 
-const _MAX_FRAMES_IN_FLIGHT: usize = 2;
+const _MAX_FRAMES_IN_FLIGHT: u32 = 2;
 
 pub type ShaderLoadingError = shader_module::Error;
 
@@ -55,6 +57,16 @@ impl Debug for ContextNonDebug {
     }
 }
 
+#[repr(C)]
+#[derive(Debug, bytemuck::Pod, bytemuck::Zeroable, Clone, Copy)]
+struct _Uniform {
+    model: Mat4<f32>,
+    view: Mat4<f32>,
+    proj: Mat4<f32>,
+}
+
+#[repr(C)]
+#[derive(Debug, bytemuck::Pod, bytemuck::Zeroable, Clone, Copy)]
 struct Vertex {
     pos: vek::Vec2<f32>,
     col: Vec3<f32>,
@@ -125,7 +137,7 @@ pub enum ContextCreationError {
     SwapchainCreation,
     _CommandBufferCreation,
     #[allow(dead_code)]
-    Unknown(String),
+    UnknownVulkan(String, vk::Result),
     #[allow(dead_code)]
     WindowCreation(winit::error::OsError),
     ShaderCompilerCreation,
@@ -163,10 +175,8 @@ impl Context {
         let avail_extensions =
         //SAFETY: Should always be good
             unsafe { entry.enumerate_instance_extension_properties(None) }
-                .map_err(|_| {
-                    ContextCreationError::Unknown(String::from_str(
-                        "Couldn't load instance extensions",
-                    ).unwrap())
+                .map_err(|e| {
+                    ContextCreationError::UnknownVulkan("enumerating instance extensions".to_owned(), e)
                 })?;
         let windowing_required_extensions =
             ash_window::enumerate_required_extensions(
@@ -440,10 +450,7 @@ impl Context {
             //SAFETY: valid ci
             unsafe { DescriptorSetLayout::new(&device, &descriptor_set_layout_ci) }
                 .map_err(|err| {
-                    ContextCreationError::Unknown(format!(
-                "Couldn't make descriptor set layout. vk Error code :{}",
-                err
-            ))
+                    ContextCreationError::UnknownVulkan("creation of descriptor set layout".to_owned(), err)
                 })?;
         let descriptor_set_layouts = [descriptor_set_layout.inner()];
 
@@ -455,11 +462,35 @@ impl Context {
             pipeline_layout::PipelineLayout::new(&device, &pipeline_layout_ci)
         }
         .map_err(|err| {
-            ContextCreationError::Unknown(format!(
-                "Could not create pipeline layout. Error code {}",
-                err
-            ))
-        });
+            ContextCreationError::UnknownVulkan(
+                "creation of pipeline layout".into(),
+                err,
+            )
+        })?;
+
+        let descriptor_pool_sizes = &[vk::DescriptorPoolSize::default()
+            .descriptor_count(_MAX_FRAMES_IN_FLIGHT)
+            .ty(vk::DescriptorType::UNIFORM_BUFFER)];
+
+        let mut max_descriptor_sets = 0;
+        for pool_size in descriptor_pool_sizes {
+            max_descriptor_sets += pool_size.descriptor_count;
+        }
+
+        let descriptor_pool_ci = vk::DescriptorPoolCreateInfo::default()
+            .max_sets(max_descriptor_sets)
+            .pool_sizes(descriptor_pool_sizes);
+
+        let _descriptor_pool =
+            //SAFETY: valid ci
+            unsafe { DescriptorSets::new(&device, &descriptor_pool_ci) }
+                .map_err(|err| {
+                    ContextCreationError::UnknownVulkan(
+                        "creation of descriptor pool".into(),
+                        err,
+                    )
+                })?;
+
         Ok(Context {
             win,
             _nd: ContextNonDebug {
