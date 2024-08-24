@@ -3,7 +3,7 @@ use std::{
     ffi::CStr,
     fmt::{Debug, Display},
     marker::PhantomData,
-    mem::{offset_of, size_of},
+    mem::{offset_of, size_of, size_of_val},
     path::Path,
     rc::Rc,
     sync::Arc,

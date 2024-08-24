@@ -99,8 +99,8 @@ impl Device {
             &inner,
             phys_dev,
         );
-        //SAFETY: Valid ci
         let allocator =
+            //SAFETY: Valid ci
             ManuallyDrop::new(unsafe { vk_mem::Allocator::new(allocator_ci) }?);
 
         Ok(Self {
