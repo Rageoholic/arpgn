@@ -1,10 +1,11 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashSet,
     ffi::CStr,
     fmt::{Debug, Display},
     marker::PhantomData,
     mem::{offset_of, size_of},
     path::Path,
+    rc::Rc,
     sync::Arc,
 };
 
@@ -15,9 +16,12 @@ use ash::{
         AttachmentReference, AttachmentStoreOp, BlendFactor,
         ColorComponentFlags, CullModeFlags, DebugUtilsMessageSeverityFlagsEXT,
         DebugUtilsMessageTypeFlagsEXT, DebugUtilsMessengerCreateInfoEXT,
-        DescriptorType, DeviceCreateInfo, DeviceQueueCreateInfo, Format,
-        FrontFace, GraphicsPipelineCreateInfo, ImageLayout, InstanceCreateInfo,
-        LogicOp, PhysicalDevice, PhysicalDeviceType, PipelineBindPoint,
+        DescriptorPoolCreateInfo, DescriptorPoolSize,
+        DescriptorSetAllocateInfo, DescriptorSetLayoutBinding,
+        DescriptorSetLayoutCreateInfo, DescriptorType, DeviceCreateInfo,
+        DeviceQueueCreateInfo, Format, FrontFace, GraphicsPipelineCreateInfo,
+        ImageLayout, InstanceCreateInfo, LogicOp, PhysicalDevice,
+        PhysicalDeviceType, PipelineBindPoint,
         PipelineColorBlendAttachmentState, PipelineColorBlendStateCreateInfo,
         PipelineInputAssemblyStateCreateInfo, PipelineLayoutCreateInfo,
         PipelineMultisampleStateCreateInfo,
@@ -31,7 +35,7 @@ use ash::{
     LoadingError,
 };
 use debug_messenger::DebugMessenger;
-use descriptor_set_map::{DescriptorRequest, DescriptorSetMap};
+use descriptor_sets::{DescriptorPool, DescriptorSet, DescriptorSetLayout};
 use device::Device;
 use instance::Instance;
 
@@ -57,7 +61,7 @@ const DEFAULT_WINDOW_WIDTH: u32 = 1280;
 const DEFAULT_WINDOW_HEIGHT: u32 = 720;
 
 mod debug_messenger;
-mod descriptor_set_map;
+mod descriptor_sets;
 mod device;
 mod instance;
 mod pipeline;
@@ -67,7 +71,7 @@ mod shader_module;
 mod surface;
 mod swapchain;
 
-const _MAX_FRAMES_IN_FLIGHT: u32 = 2;
+const MAX_FRAMES_IN_FLIGHT: u32 = 2;
 
 #[repr(C)]
 #[derive(Debug, bytemuck::Pod, bytemuck::Zeroable, Clone, Copy)]
@@ -121,6 +125,7 @@ pub struct Context {
     _debug_messenger: Option<DebugMessenger>,
 
     _surface_derived: Option<SurfaceDerived>,
+    _descriptor_sets: Vec<DescriptorSet>,
 }
 
 #[derive(Debug, Default)]
@@ -312,6 +317,8 @@ pub enum ContextCreationError {
     ShaderLoading(#[from] ShaderModuleCreationErrors),
     #[error("Render setup error: {0}")]
     RenderSetup(#[from] RenderSetupError),
+    #[error("Error making descriptor set")]
+    DescriptorSetCreation,
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -581,24 +588,47 @@ impl Context {
                     Err(ShaderModuleCreationErrors(vec![e1, e2]))
                 }
             }?;
+        let bindings = &[DescriptorSetLayoutBinding::default()
+            .binding(0)
+            .descriptor_count(MAX_FRAMES_IN_FLIGHT)
+            .stage_flags(ShaderStageFlags::VERTEX)
+            .descriptor_type(DescriptorType::UNIFORM_BUFFER)];
+        let descriptor_set_layout_ci =
+            DescriptorSetLayoutCreateInfo::default().bindings(bindings);
+        //SAFETY: Valid ci
+        let descriptor_set_layout = unsafe {
+            DescriptorSetLayout::new(&device, &descriptor_set_layout_ci)
+        }
+        .map_err(|_| ContextCreationError::DescriptorSetCreation)?;
 
-        let mut descriptor_requests = HashMap::with_capacity(1);
-        descriptor_requests.insert(
-            0,
-            DescriptorRequest {
-                ty: DescriptorType::UNIFORM_BUFFER,
-                count: _MAX_FRAMES_IN_FLIGHT,
-                binding: 0,
-            },
-        );
+        let descriptor_set_layouts = &[descriptor_set_layout.as_inner()];
 
-        let descriptor_map =
-            DescriptorSetMap::new(&device, descriptor_requests).map_err(
-                |err| UnknownVulkan("creating descriptor map".into(), err),
-            )?;
-        let descriptor_set_layouts = [descriptor_map.layout_handle()];
+        let pool_sizes = &[DescriptorPoolSize::default()
+            .descriptor_count(MAX_FRAMES_IN_FLIGHT)
+            .ty(DescriptorType::UNIFORM_BUFFER)];
+        let descriptor_pool_ci = DescriptorPoolCreateInfo::default()
+            .max_sets(MAX_FRAMES_IN_FLIGHT)
+            .pool_sizes(pool_sizes);
+        let descriptor_pool =
+            //SAFETY: valid ci
+            Rc::new(unsafe { DescriptorPool::new(&device, &descriptor_pool_ci) }
+                            .map_err(|_| DescriptorSetCreation)?);
+
+        let duped_layouts = vec![
+            descriptor_set_layout.as_inner();
+            MAX_FRAMES_IN_FLIGHT as usize
+        ];
+        let descriptor_set_ai = DescriptorSetAllocateInfo::default()
+            .descriptor_pool(descriptor_pool.as_inner())
+            .set_layouts(&duped_layouts);
+
+        //SAFETY: valid ai
+        let descriptor_sets = unsafe {
+            DescriptorSet::alloc(&descriptor_pool, &descriptor_set_ai)
+        }
+        .map_err(|_| DescriptorSetCreation)?;
         let pipeline_layout_ci = PipelineLayoutCreateInfo::default()
-            .set_layouts(&descriptor_set_layouts);
+            .set_layouts(descriptor_set_layouts);
 
         let pipeline_layout =
             //SAFETY: Valid ci
@@ -612,7 +642,7 @@ impl Context {
 
         Ok(Context {
             win,
-
+            _descriptor_sets: descriptor_sets,
             _instance: instance,
             _debug_messenger,
             _surface_derived: Some(SurfaceDerived::new(
