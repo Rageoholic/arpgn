@@ -9,6 +9,8 @@ use std::sync::Arc;
 use ash::{prelude::VkResult, vk};
 
 use super::Device;
+
+#[derive(Debug)]
 pub struct PipelineLayout {
     inner: vk::PipelineLayout,
     parent: Arc<Device>,

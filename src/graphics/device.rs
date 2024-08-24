@@ -13,12 +13,13 @@
 use core::slice;
 use std::{
     collections::HashMap,
+    fmt::Debug,
     sync::{Arc, RwLock},
 };
 
 use ash::{
     prelude::VkResult,
-    vk::{self},
+    vk::{self, Handle},
 };
 
 use super::instance::Instance;
@@ -28,6 +29,17 @@ pub struct Device {
     phys_dev: vk::PhysicalDevice,
     parent: Arc<super::Instance>,
     _queue_families: HashMap<u32, Vec<RwLock<vk::Queue>>>,
+}
+
+impl Debug for Device {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Device")
+            .field("inner", &self.inner.handle().as_raw())
+            .field("phys_dev", &self.phys_dev)
+            .field("parent", &self.parent)
+            .field("_queue_families", &self._queue_families)
+            .finish()
+    }
 }
 
 impl Drop for Device {

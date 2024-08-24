@@ -23,6 +23,18 @@ pub(super) struct Swapchain {
     extent: vk::Extent2D,
 }
 
+impl std::fmt::Debug for Swapchain {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Swapchain")
+            .field("inner", &self.inner)
+            .field("parent_device", &self.parent_device)
+            .field("_parent_surface", &self._parent_surface)
+            .field("_format", &self._format)
+            .field("extent", &self.extent)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Swapchain {
     //SAFETY REQUIREMENT: device and surface are from the same instance
     pub unsafe fn new(

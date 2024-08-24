@@ -1,12 +1,18 @@
 use std::{
-    collections::HashSet, ffi::CStr, fmt::Debug, mem::offset_of, path::Path,
+    collections::{HashMap, HashSet},
+    ffi::CStr,
+    fmt::{Debug, Display},
+    mem::{offset_of, size_of},
+    path::Path,
     sync::Arc,
 };
 
-use ash::{vk, LoadingError};
+use ash::{
+    vk::{self, DescriptorType, PipelineLayoutCreateInfo},
+    LoadingError,
+};
 use debug_messenger::DebugMessenger;
-use descriptor::DescriptorSets;
-use descriptor_set_layout::DescriptorSetLayout;
+use descriptor_set_map::{DescriptorRequest, DescriptorSetMap};
 use device::Device;
 use instance::Instance;
 
@@ -30,8 +36,7 @@ const DEFAULT_WINDOW_WIDTH: u32 = 1280;
 const DEFAULT_WINDOW_HEIGHT: u32 = 720;
 
 mod debug_messenger;
-mod descriptor;
-mod descriptor_set_layout;
+mod descriptor_set_map;
 mod device;
 mod instance;
 mod pipeline_layout;
@@ -40,8 +45,6 @@ mod surface;
 mod swapchain;
 
 const _MAX_FRAMES_IN_FLIGHT: u32 = 2;
-
-pub type ShaderLoadingError = shader_module::Error;
 
 struct ContextNonDebug {
     _entry: Arc<ash::Entry>,
@@ -125,23 +128,56 @@ pub enum ValidationLevel {
 }
 
 #[allow(dead_code)]
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum ContextCreationError {
+    #[error("Could not load Vulkan {0:?}")]
     Loading(LoadingError),
+    #[error("Instance creation failed")]
     InstanceCreation,
-    #[allow(dead_code)]
+    #[error("Missing mandatory extensions {0:?}")]
     _MissingMandatoryExtensions(Vec<String>),
+    #[error("No suitable devices")]
     NoSuitableDevice,
+    #[error("Could not create device")]
     DeviceCreation,
+    #[error("Could not create surface")]
     SurfaceCreation,
+    #[error("Could not create swapchain")]
     SwapchainCreation,
+    #[error("Could not create command buffers")]
     _CommandBufferCreation,
-    #[allow(dead_code)]
+    #[error("Unknown vulkan error while {0}. Error code {1:?}")]
     UnknownVulkan(String, vk::Result),
-    #[allow(dead_code)]
-    WindowCreation(winit::error::OsError),
+    #[error("Error creating window: {0:?}")]
+    WindowCreation(#[from] winit::error::OsError),
+    #[error("Could not make shader compiler")]
     ShaderCompilerCreation,
-    ShaderLoading(Vec<shader_module::Error>),
+    #[error("Compilation errors\n{0}")]
+    ShaderLoading(#[from] ShaderModuleCreationErrors),
+}
+#[derive(thiserror::Error, Debug)]
+pub struct ShaderModuleCreationErrors(Vec<shader_module::Error>);
+
+impl Display for ShaderModuleCreationErrors {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for error in &self.0 {
+            let line = match error {
+                shader_module::Error::FileLoad(file_name, err) => {
+                    format!(
+                        "{} not found: Error code: {}",
+                        file_name.to_string_lossy(),
+                        err
+                    )
+                }
+                shader_module::Error::ShaderCompilation(err) => err.to_string(),
+                shader_module::Error::MemoryExhaustion => {
+                    "Memory exhausted".into()
+                }
+            };
+            f.write_str(&line)?;
+        }
+        Ok(())
+    }
 }
 
 const KHRONOS_VALIDATION_LAYER_NAME: &CStr = c"VK_LAYER_KHRONOS_validation";
@@ -275,7 +311,7 @@ impl Context {
                 .map_err(|_| ContextCreationError::InstanceCreation)?,
         );
 
-        let debug_messenger = if opts.graphics_validation_layers
+        let _debug_messenger = if opts.graphics_validation_layers
             != ValidationLevel::None
         {
             //SAFETY: Valid ci. We know cause we made it
@@ -392,11 +428,13 @@ impl Context {
             match (vert_shader_mod, frag_shader_mod) {
                 (Ok(mod1), Ok(mod2)) => Ok((mod1, mod2)),
                 (Err(e), Ok(_)) | (Ok(_), Err(e)) => {
-                    Err(ContextCreationError::ShaderLoading(vec![e]))
+                    Err(ContextCreationError::ShaderLoading(
+                        ShaderModuleCreationErrors(vec![e]),
+                    ))
                 }
-                (Err(e1), Err(e2)) => {
-                    Err(ContextCreationError::ShaderLoading(vec![e1, e2]))
-                }
+                (Err(e1), Err(e2)) => Err(ContextCreationError::ShaderLoading(
+                    ShaderModuleCreationErrors(vec![e1, e2]),
+                )),
             }?;
         let vertex_attribute_descriptions =
             Vertex::vertex_attribute_descriptions(0);
@@ -406,7 +444,7 @@ impl Context {
             vk::PipelineVertexInputStateCreateInfo::default()
                 .vertex_attribute_descriptions(&vertex_attribute_descriptions)
                 .vertex_binding_descriptions(&vertex_binding_descriptions);
-        let _input_assembly_statee =
+        let _input_assembly_state =
             vk::PipelineInputAssemblyStateCreateInfo::default()
                 .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
                 .primitive_restart_enable(false);
@@ -443,18 +481,28 @@ impl Context {
                 .logic_op_enable(false)
                 .logic_op(vk::LogicOp::COPY)
                 .blend_constants([0.0, 0.0, 0.0, 0.0]);
-        let descriptor_set_layout_ci =
-            vk::DescriptorSetLayoutCreateInfo::default();
 
-        let descriptor_set_layout =
-            //SAFETY: valid ci
-            unsafe { DescriptorSetLayout::new(&device, &descriptor_set_layout_ci) }
-                .map_err(|err| {
-                    ContextCreationError::UnknownVulkan("creation of descriptor set layout".to_owned(), err)
-                })?;
-        let descriptor_set_layouts = [descriptor_set_layout.inner()];
+        let mut descriptor_requests = HashMap::with_capacity(1);
+        descriptor_requests.insert(
+            0,
+            DescriptorRequest {
+                ty: DescriptorType::UNIFORM_BUFFER,
+                count: _MAX_FRAMES_IN_FLIGHT,
+                binding: 0,
+            },
+        );
 
-        let pipeline_layout_ci = vk::PipelineLayoutCreateInfo::default()
+        let descriptor_map =
+            DescriptorSetMap::new(&device, descriptor_requests).map_err(
+                |err| {
+                    ContextCreationError::UnknownVulkan(
+                        "creating descriptor map".into(),
+                        err,
+                    )
+                },
+            )?;
+        let descriptor_set_layouts = [descriptor_map.layout_handle()];
+        let pipeline_layout_ci = PipelineLayoutCreateInfo::default()
             .set_layouts(&descriptor_set_layouts);
 
         //SAFETY: Valid ci
@@ -468,35 +516,12 @@ impl Context {
             )
         })?;
 
-        let descriptor_pool_sizes = &[vk::DescriptorPoolSize::default()
-            .descriptor_count(_MAX_FRAMES_IN_FLIGHT)
-            .ty(vk::DescriptorType::UNIFORM_BUFFER)];
-
-        let mut max_descriptor_sets = 0;
-        for pool_size in descriptor_pool_sizes {
-            max_descriptor_sets += pool_size.descriptor_count;
-        }
-
-        let descriptor_pool_ci = vk::DescriptorPoolCreateInfo::default()
-            .max_sets(max_descriptor_sets)
-            .pool_sizes(descriptor_pool_sizes);
-
-        let _descriptor_pool =
-            //SAFETY: valid ci
-            unsafe { DescriptorSets::new(&device, &descriptor_pool_ci) }
-                .map_err(|err| {
-                    ContextCreationError::UnknownVulkan(
-                        "creation of descriptor pool".into(),
-                        err,
-                    )
-                })?;
-
         Ok(Context {
             win,
             _nd: ContextNonDebug {
                 _entry: entry,
                 _instance: instance,
-                _debug_messenger: debug_messenger,
+                _debug_messenger,
                 _swapchain: swapchain,
             },
         })

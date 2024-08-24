@@ -23,7 +23,7 @@ pub enum Error {
     MemoryExhaustion,
 }
 
-#[allow(dead_code)]
+#[derive(Debug)]
 pub struct ShaderModule {
     inner: vk::ShaderModule,
     parent: Arc<super::Device>,

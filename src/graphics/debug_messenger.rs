@@ -23,7 +23,14 @@ pub(super) struct DebugMessenger {
     _parent: Arc<Instance>,
     instance: debug_utils::Instance,
 }
-
+impl std::fmt::Debug for DebugMessenger {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DebugMessenger")
+            .field("inner", &self.inner)
+            .field("parent", &self._parent)
+            .finish_non_exhaustive()
+    }
+}
 impl Drop for DebugMessenger {
     fn drop(&mut self) {
         //SAFETY: We know that our inner was made from the debug_utils::Instance
