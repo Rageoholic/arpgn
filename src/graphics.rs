@@ -3,7 +3,7 @@ use std::{
     ffi::CStr,
     fmt::{Debug, Display},
     marker::PhantomData,
-    mem::{offset_of, size_of},
+    mem::{offset_of, size_of, size_of_val},
     path::Path,
     rc::Rc,
     sync::Arc,
@@ -13,28 +13,30 @@ use ash::{
     vk::{
         api_version_major, api_version_minor, api_version_patch,
         ApplicationInfo, AttachmentDescription, AttachmentLoadOp,
-        AttachmentReference, AttachmentStoreOp, BlendFactor,
-        ColorComponentFlags, CommandBufferLevel, CommandPoolCreateFlags,
-        CommandPoolCreateInfo, CullModeFlags,
+        AttachmentReference, AttachmentStoreOp, BlendFactor, BufferCreateInfo,
+        BufferUsageFlags, ColorComponentFlags, CommandBufferLevel,
+        CommandPoolCreateFlags, CommandPoolCreateInfo, CullModeFlags,
         DebugUtilsMessageSeverityFlagsEXT, DebugUtilsMessageTypeFlagsEXT,
         DebugUtilsMessengerCreateInfoEXT, DescriptorPoolCreateInfo,
         DescriptorPoolSize, DescriptorSetAllocateInfo,
         DescriptorSetLayoutBinding, DescriptorSetLayoutCreateInfo,
         DescriptorType, DeviceCreateInfo, DeviceQueueCreateInfo, Format,
         FrontFace, GraphicsPipelineCreateInfo, ImageLayout, InstanceCreateInfo,
-        LogicOp, PhysicalDevice, PhysicalDeviceType, PipelineBindPoint,
-        PipelineColorBlendAttachmentState, PipelineColorBlendStateCreateInfo,
+        LogicOp, MemoryPropertyFlags, PhysicalDevice, PhysicalDeviceType,
+        PipelineBindPoint, PipelineColorBlendAttachmentState,
+        PipelineColorBlendStateCreateInfo,
         PipelineInputAssemblyStateCreateInfo, PipelineLayoutCreateInfo,
         PipelineMultisampleStateCreateInfo,
         PipelineRasterizationStateCreateInfo, PipelineShaderStageCreateInfo,
         PipelineVertexInputStateCreateInfo, PipelineViewportStateCreateInfo,
         PolygonMode, PrimitiveTopology, QueueFlags, RenderPassCreateInfo,
-        Result as VkResult, SampleCountFlags, ShaderStageFlags,
+        Result as VkResult, SampleCountFlags, ShaderStageFlags, SharingMode,
         SubpassDescription, VertexInputAttributeDescription,
         VertexInputBindingDescription, VertexInputRate, API_VERSION_1_0,
     },
     LoadingError,
 };
+use buffers::ManagedMappableBuffer;
 use command_buffers::CommandPool;
 use debug_messenger::DebugMessenger;
 use descriptor_sets::{DescriptorPool, DescriptorSet, DescriptorSetLayout};
@@ -50,7 +52,7 @@ use strum::EnumString;
 
 use surface::Surface;
 use swapchain::Swapchain;
-use vek::{Mat4, Vec3};
+use vek::{Mat4, Vec2, Vec3};
 use winit::{
     dpi::{LogicalSize, Size},
     event_loop::ActiveEventLoop,
@@ -62,6 +64,7 @@ const DEFAULT_WINDOW_WIDTH: u32 = 1280;
 
 const DEFAULT_WINDOW_HEIGHT: u32 = 720;
 
+mod buffers;
 mod command_buffers;
 mod debug_messenger;
 mod descriptor_sets;
@@ -76,9 +79,26 @@ mod swapchain;
 
 const MAX_FRAMES_IN_FLIGHT: u32 = 2;
 
+const VERTICES: &[Vertex] = &[
+    Vertex {
+        pos: Vec2::new(0.0, -0.5),
+        col: Vec3::new(1.0, 0.0, 0.0),
+    },
+    Vertex {
+        pos: Vec2::new(0.5, 0.5),
+        col: Vec3::new(0.0, 0.0, 1.0),
+    },
+    Vertex {
+        pos: Vec2::new(-0.5, -0.5),
+        col: Vec3::new(0.0, 1.0, 0.0),
+    },
+];
+
+const INDICES: &[u16] = &[0, 1, 2];
+
 #[repr(C)]
 #[derive(Debug, bytemuck::Pod, bytemuck::Zeroable, Clone, Copy)]
-struct _Uniform {
+struct Uniform {
     model: Mat4<f32>,
     view: Mat4<f32>,
     proj: Mat4<f32>,
@@ -129,6 +149,9 @@ pub struct Context {
     _surface_derived: Option<SurfaceDerived>,
     _command_buffers: Vec<command_buffers::CommandBuffer>,
     _descriptor_sets: Vec<DescriptorSet>,
+    _vertex_buffers: Vec<ManagedMappableBuffer<Vertex>>,
+    _uniform_buffers: Vec<ManagedMappableBuffer<Uniform>>,
+    _index_buffers: Vec<ManagedMappableBuffer<u16>>,
 }
 
 #[derive(Debug, Default)]
@@ -603,7 +626,7 @@ impl Context {
             }?;
         let bindings = &[DescriptorSetLayoutBinding::default()
             .binding(0)
-            .descriptor_count(MAX_FRAMES_IN_FLIGHT)
+            .descriptor_count(1)
             .stage_flags(ShaderStageFlags::VERTEX)
             .descriptor_type(DescriptorType::UNIFORM_BUFFER)];
         let descriptor_set_layout_ci =
@@ -639,7 +662,7 @@ impl Context {
         let descriptor_sets = unsafe {
             DescriptorSet::alloc(&descriptor_pool, &descriptor_set_ai)
         }
-        .map_err(|_| DescriptorSetCreation)?;
+        .unwrap();
         let pipeline_layout_ci = PipelineLayoutCreateInfo::default()
             .set_layouts(descriptor_set_layouts);
 
@@ -667,6 +690,93 @@ impl Context {
                 CommandBufferLevel::PRIMARY,
             )
             .map_err(|_| CommandBufferCreation)?;
+
+        let mut vertex_buffers =
+            Vec::with_capacity(MAX_FRAMES_IN_FLIGHT.try_into().unwrap());
+        let mut index_buffers =
+            Vec::with_capacity(MAX_FRAMES_IN_FLIGHT.try_into().unwrap());
+        let mut uniform_buffers =
+            Vec::with_capacity(MAX_FRAMES_IN_FLIGHT.try_into().unwrap());
+        let buffer_qfis = &[scored_phys_dev.graphics_queue_index];
+
+        let vertex_buffer_ci = BufferCreateInfo::default()
+            .sharing_mode(SharingMode::EXCLUSIVE)
+            .queue_family_indices(buffer_qfis)
+            .usage(BufferUsageFlags::VERTEX_BUFFER)
+            .size(size_of_val(VERTICES) as u64);
+
+        let vertex_buffer_ai = vk_mem::AllocationCreateInfo {
+            flags: vk_mem::AllocationCreateFlags::MAPPED
+                | vk_mem::AllocationCreateFlags::HOST_ACCESS_SEQUENTIAL_WRITE,
+            usage: vk_mem::MemoryUsage::AutoPreferDevice,
+            required_flags: MemoryPropertyFlags::HOST_VISIBLE,
+            preferred_flags: MemoryPropertyFlags::HOST_COHERENT,
+            ..Default::default()
+        };
+        let index_buffer_ci = BufferCreateInfo::default()
+            .sharing_mode(SharingMode::EXCLUSIVE)
+            .queue_family_indices(buffer_qfis)
+            .usage(BufferUsageFlags::INDEX_BUFFER)
+            .size(size_of_val(INDICES) as u64);
+
+        let index_buffer_ai = vk_mem::AllocationCreateInfo {
+            flags: vk_mem::AllocationCreateFlags::MAPPED
+                | vk_mem::AllocationCreateFlags::HOST_ACCESS_SEQUENTIAL_WRITE,
+            usage: vk_mem::MemoryUsage::AutoPreferDevice,
+            required_flags: MemoryPropertyFlags::HOST_VISIBLE,
+            preferred_flags: MemoryPropertyFlags::HOST_COHERENT,
+            ..Default::default()
+        };
+        let uniform_buffer_ci = BufferCreateInfo::default()
+            .sharing_mode(SharingMode::EXCLUSIVE)
+            .queue_family_indices(buffer_qfis)
+            .usage(BufferUsageFlags::UNIFORM_BUFFER)
+            .size(size_of::<Uniform>() as u64);
+
+        let uniform_buffer_ai = vk_mem::AllocationCreateInfo {
+            flags: vk_mem::AllocationCreateFlags::MAPPED
+                | vk_mem::AllocationCreateFlags::HOST_ACCESS_SEQUENTIAL_WRITE,
+            usage: vk_mem::MemoryUsage::AutoPreferHost,
+            required_flags: MemoryPropertyFlags::HOST_VISIBLE,
+            preferred_flags: MemoryPropertyFlags::HOST_COHERENT,
+            ..Default::default()
+        };
+
+        for _ in 0..MAX_FRAMES_IN_FLIGHT {
+            vertex_buffers.push(
+                //SAFETY: valid ci and ai
+                unsafe {
+                    ManagedMappableBuffer::new(
+                        &device,
+                        &vertex_buffer_ci,
+                        &vertex_buffer_ai,
+                    )
+                }
+                .unwrap(),
+            );
+            index_buffers.push(
+                //SAFETY: valid ci and ai
+                unsafe {
+                    ManagedMappableBuffer::new(
+                        &device,
+                        &index_buffer_ci,
+                        &index_buffer_ai,
+                    )
+                }
+                .unwrap(),
+            );
+            uniform_buffers.push(
+                //SAFETY: valid ci and ai
+                unsafe {
+                    ManagedMappableBuffer::new(
+                        &device,
+                        &uniform_buffer_ci,
+                        &uniform_buffer_ai,
+                    )
+                }
+                .unwrap(),
+            );
+        }
         Ok(Context {
             win,
             _command_buffers: command_buffers,
@@ -681,6 +791,9 @@ impl Context {
                 &[&vert_shader_mod, &frag_shader_mod],
                 pipeline_layout,
             )?),
+            _vertex_buffers: vertex_buffers,
+            _uniform_buffers: uniform_buffers,
+            _index_buffers: index_buffers,
         })
     }
     pub fn resize(&mut self) {}
