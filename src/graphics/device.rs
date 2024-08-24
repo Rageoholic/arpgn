@@ -14,6 +14,7 @@ use core::slice;
 use std::{
     collections::HashMap,
     fmt::Debug,
+    mem::ManuallyDrop,
     sync::{Arc, RwLock},
 };
 
@@ -32,6 +33,7 @@ pub struct Device {
     phys_dev: PhysicalDevice,
     parent: Arc<super::Instance>,
     _queue_families: HashMap<u32, Vec<RwLock<Queue>>>,
+    allocator: ManuallyDrop<vk_mem::Allocator>,
 }
 
 impl Debug for Device {
@@ -47,6 +49,8 @@ impl Debug for Device {
 
 impl Drop for Device {
     fn drop(&mut self) {
+        //SAFETY: Last use of self.allocator
+        unsafe { ManuallyDrop::drop(&mut self.allocator) };
         //SAFETY: Last use of device, all child objects have been destroyed
         //(other objects are responsible for that)
         unsafe { self.inner.destroy_device(None) };
@@ -62,41 +66,50 @@ impl Device {
     ) -> VkResult<Self> {
         //SAFETY: valid ci. phys_dev derived from instance. Preconditions of
         //this unsafe function
-        unsafe { instance.as_inner_ref().create_device(phys_dev, ci, None) }
-            .map(|inner| {
-                //SAFETY: Must be safe if this is a valid ci
-                let queue_cis = unsafe {
-                    slice::from_raw_parts(
-                        ci.p_queue_create_infos,
-                        ci.queue_create_info_count as usize,
-                    )
-                };
-                let mut queue_families =
-                    HashMap::with_capacity(queue_cis.len());
+        let inner = unsafe {
+            instance.as_inner_ref().create_device(phys_dev, ci, None)
+        }?;
 
-                for queue_ci in queue_cis {
-                    let family = queue_ci.queue_family_index;
-                    let family_queue_count = queue_ci.queue_count;
-                    let mut queue_family_queues =
-                        Vec::with_capacity(family_queue_count as usize);
-                    for i in 0..family_queue_count {
-                        queue_family_queues.push(RwLock::new(
-                            //SAFETY: We know these queues exist cause we're
-                            //pulling from the queue family info
-                            unsafe { inner.get_device_queue(family, i) },
-                        ));
-                    }
+        //SAFETY: Must be safe if this is a valid ci
+        let queue_cis = unsafe {
+            slice::from_raw_parts(
+                ci.p_queue_create_infos,
+                ci.queue_create_info_count as usize,
+            )
+        };
+        let mut queue_families = HashMap::with_capacity(queue_cis.len());
 
-                    queue_families.insert(family, queue_family_queues);
-                }
+        for queue_ci in queue_cis {
+            let family = queue_ci.queue_family_index;
+            let family_queue_count = queue_ci.queue_count;
+            let mut queue_family_queues =
+                Vec::with_capacity(family_queue_count as usize);
+            for i in 0..family_queue_count {
+                queue_family_queues.push(RwLock::new(
+                    //SAFETY: We know these queues exist cause we're
+                    //pulling from the queue family info
+                    unsafe { inner.get_device_queue(family, i) },
+                ));
+            }
 
-                Self {
-                    inner,
-                    phys_dev,
-                    parent: instance.clone(),
-                    _queue_families: queue_families,
-                }
-            })
+            queue_families.insert(family, queue_family_queues);
+        }
+        let allocator_ci = vk_mem::AllocatorCreateInfo::new(
+            instance.as_inner_ref(),
+            &inner,
+            phys_dev,
+        );
+        //SAFETY: Valid ci
+        let allocator =
+            ManuallyDrop::new(unsafe { vk_mem::Allocator::new(allocator_ci) }?);
+
+        Ok(Self {
+            inner,
+            phys_dev,
+            parent: instance.clone(),
+            _queue_families: queue_families,
+            allocator,
+        })
     }
 
     //SAFETY Requirements: 1) Valid submits, 2) fence comes from this device
@@ -135,6 +148,9 @@ impl Device {
     /// NEVER EVER CALL `destroy_device` ON THE RETURN VALUE FROM THIS
     pub(super) fn as_inner_ref(&self) -> &ash::Device {
         &self.inner
+    }
+    pub(super) fn get_allocator_ref(&self) -> &vk_mem::Allocator {
+        &self.allocator
     }
 }
 pub enum _QueueSubmitError {
