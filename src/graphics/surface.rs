@@ -9,7 +9,10 @@ use std::sync::Arc;
 
 use ash::{
     prelude::VkResult,
-    vk::{self, Handle},
+    vk::{
+        Handle, PhysicalDevice, PresentModeKHR, SurfaceCapabilitiesKHR,
+        SurfaceFormatKHR, SurfaceKHR,
+    },
 };
 use winit::{
     dpi::PhysicalSize,
@@ -20,7 +23,7 @@ use winit::{
 use super::Instance;
 
 pub(super) struct Surface {
-    surface: vk::SurfaceKHR,
+    surface: SurfaceKHR,
     surface_instance: ash::khr::surface::Instance,
     //These are here to ensure these are dropped *after* the surface
     _parent_instance: Arc<Instance>,
@@ -74,7 +77,7 @@ impl Surface {
     //surface, queue_family_index must be in bounds
     pub unsafe fn does_queue_support_presentation(
         &self,
-        phys_dev: vk::PhysicalDevice,
+        phys_dev: PhysicalDevice,
         queue_family_index: u32,
     ) -> bool {
         //SAFETY: phys_dev from same instance, qfi in bounds. This function's
@@ -91,7 +94,7 @@ impl Surface {
 
     pub unsafe fn get_compatible_swapchain_info(
         &self,
-        phys_dev: vk::PhysicalDevice,
+        phys_dev: PhysicalDevice,
     ) -> VkResult<SwapchainInfo> {
         //SAFETY: phys_dev is derived from same parent instance as surface
         let capabilities = unsafe {
@@ -125,13 +128,13 @@ impl Surface {
     pub fn get_size(&self) -> PhysicalSize<u32> {
         self.parent_window.inner_size()
     }
-    pub fn get_inner(&self) -> vk::SurfaceKHR {
+    pub fn get_inner(&self) -> SurfaceKHR {
         self.surface
     }
 }
 
 pub struct SwapchainInfo {
-    pub capabilities: vk::SurfaceCapabilitiesKHR,
-    pub present_modes: Vec<vk::PresentModeKHR>,
-    pub formats: Vec<vk::SurfaceFormatKHR>,
+    pub capabilities: SurfaceCapabilitiesKHR,
+    pub present_modes: Vec<PresentModeKHR>,
+    pub formats: Vec<SurfaceFormatKHR>,
 }

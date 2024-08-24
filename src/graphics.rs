@@ -8,7 +8,25 @@ use std::{
 };
 
 use ash::{
-    vk::{self, DescriptorType, PipelineLayoutCreateInfo},
+    vk::{
+        api_version_major, api_version_minor, api_version_patch,
+        ApplicationInfo, AttachmentDescription, AttachmentLoadOp,
+        AttachmentReference, AttachmentStoreOp, BlendFactor,
+        ColorComponentFlags, CullModeFlags, DebugUtilsMessageSeverityFlagsEXT,
+        DebugUtilsMessageTypeFlagsEXT, DebugUtilsMessengerCreateInfoEXT,
+        DescriptorType, DeviceCreateInfo, DeviceQueueCreateInfo, Format,
+        FrontFace, GraphicsPipelineCreateInfo, ImageLayout, InstanceCreateInfo,
+        LogicOp, PhysicalDevice, PhysicalDeviceType, PipelineBindPoint,
+        PipelineColorBlendAttachmentState, PipelineColorBlendStateCreateInfo,
+        PipelineInputAssemblyStateCreateInfo, PipelineLayoutCreateInfo,
+        PipelineMultisampleStateCreateInfo,
+        PipelineRasterizationStateCreateInfo, PipelineShaderStageCreateInfo,
+        PipelineVertexInputStateCreateInfo, PipelineViewportStateCreateInfo,
+        PolygonMode, PrimitiveTopology, QueueFlags, RenderPassCreateInfo,
+        Result as VkResult, SampleCountFlags, ShaderStageFlags,
+        SubpassDescription, VertexInputAttributeDescription,
+        VertexInputBindingDescription, VertexInputRate, API_VERSION_1_0,
+    },
     LoadingError,
 };
 use debug_messenger::DebugMessenger;
@@ -16,8 +34,10 @@ use descriptor_set_map::{DescriptorRequest, DescriptorSetMap};
 use device::Device;
 use instance::Instance;
 
+use pipeline::Pipeline;
+use pipeline_layout::PipelineLayout;
+use render_pass::RenderPass;
 use shader_module::ShaderModule;
-use shaderc::ShaderKind;
 use structopt::StructOpt;
 use strum::EnumString;
 
@@ -39,26 +59,14 @@ mod debug_messenger;
 mod descriptor_set_map;
 mod device;
 mod instance;
+mod pipeline;
 mod pipeline_layout;
+mod render_pass;
 mod shader_module;
 mod surface;
 mod swapchain;
 
 const _MAX_FRAMES_IN_FLIGHT: u32 = 2;
-
-struct ContextNonDebug {
-    _entry: Arc<ash::Entry>,
-    _instance: Arc<Instance>,
-    _debug_messenger: Option<DebugMessenger>,
-    _swapchain: Swapchain,
-}
-
-impl Debug for ContextNonDebug {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("GraphicsContextNonDebug")
-            .finish_non_exhaustive()
-    }
-}
 
 #[repr(C)]
 #[derive(Debug, bytemuck::Pod, bytemuck::Zeroable, Clone, Copy)]
@@ -77,25 +85,25 @@ struct Vertex {
 impl Vertex {
     fn vertex_attribute_descriptions(
         binding: u32,
-    ) -> [vk::VertexInputAttributeDescription; 2] {
+    ) -> [VertexInputAttributeDescription; 2] {
         [
-            vk::VertexInputAttributeDescription::default()
+            VertexInputAttributeDescription::default()
                 .location(0)
                 .binding(binding)
-                .format(vk::Format::R32G32_SFLOAT)
+                .format(Format::R32G32_SFLOAT)
                 .offset(offset_of!(Vertex, pos) as u32),
-            vk::VertexInputAttributeDescription::default()
-                .location(0)
+            VertexInputAttributeDescription::default()
+                .location(1)
                 .binding(binding)
                 .offset(offset_of!(Vertex, col) as u32)
-                .format(vk::Format::R32G32B32_SFLOAT),
+                .format(Format::R32G32B32_SFLOAT),
         ]
     }
     fn vertex_binding_descriptions(
         binding: u32,
-        input_rate: vk::VertexInputRate,
-    ) -> [vk::VertexInputBindingDescription; 1] {
-        [vk::VertexInputBindingDescription::default()
+        input_rate: VertexInputRate,
+    ) -> [VertexInputBindingDescription; 1] {
+        [VertexInputBindingDescription::default()
             .binding(binding)
             .stride(size_of::<Vertex>() as u32)
             .input_rate(input_rate)]
@@ -108,7 +116,10 @@ impl Vertex {
 #[derive(Debug)]
 pub struct Context {
     win: Arc<Window>,
-    _nd: ContextNonDebug,
+    _instance: Arc<Instance>,
+    _debug_messenger: Option<DebugMessenger>,
+
+    _surface_derived: Option<SurfaceDerived>,
 }
 
 #[derive(Debug, Default)]
@@ -127,6 +138,149 @@ pub enum ValidationLevel {
     Verbose,
 }
 
+#[derive(Debug)]
+struct SurfaceDerived {
+    _swapchain: Swapchain,
+    _pipeline: Pipeline,
+}
+impl SurfaceDerived {
+    fn new(
+        device: &Arc<Device>,
+        surface: Arc<Surface>,
+        graphics_queue_index: u32,
+        present_queue_index: u32,
+        shader_modules: &[&ShaderModule],
+        pipeline_layout: PipelineLayout,
+    ) -> Result<Self, RenderSetupError> {
+        use RenderSetupError::*;
+        //SAFETY: Device and surface are from the same instance
+        let swapchain = unsafe {
+            Swapchain::new(
+                device,
+                &surface,
+                present_queue_index,
+                graphics_queue_index,
+            )
+        }
+        .map_err(|_| SwapchainCreation)?;
+        let viewports = [swapchain.default_viewport()];
+        let scissors = [swapchain.default_scissor()];
+        let color_attachment = AttachmentDescription::default()
+            .format(swapchain.get_format())
+            .samples(SampleCountFlags::TYPE_1)
+            .load_op(AttachmentLoadOp::CLEAR)
+            .store_op(AttachmentStoreOp::STORE)
+            .stencil_load_op(AttachmentLoadOp::DONT_CARE)
+            .stencil_store_op(AttachmentStoreOp::DONT_CARE)
+            .initial_layout(ImageLayout::UNDEFINED)
+            .final_layout(ImageLayout::PRESENT_SRC_KHR);
+
+        let color_attachment_ref: AttachmentReference =
+            AttachmentReference::default()
+                .attachment(0)
+                .layout(ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
+
+        let color_attachments = &[color_attachment_ref];
+        let subpass = SubpassDescription::default()
+            .pipeline_bind_point(PipelineBindPoint::GRAPHICS)
+            .color_attachments(color_attachments);
+        let subpasses = &[subpass];
+        let attachments = [color_attachment];
+
+        let _viewport_state = PipelineViewportStateCreateInfo::default()
+            .viewports(&viewports)
+            .scissors(&scissors);
+
+        let render_pass_ci = RenderPassCreateInfo::default()
+            .attachments(&attachments)
+            .subpasses(subpasses);
+
+        //SAFETY: Valid ci
+        let render_pass = unsafe { RenderPass::new(device, &render_pass_ci) }
+            .map_err(|e| {
+            UnknownVulkan("creating render pass".to_owned(), e)
+        })?;
+
+        let shader_stages = shader_modules
+            .iter()
+            .map(|m| {
+                PipelineShaderStageCreateInfo::default()
+                    .module(m.as_raw())
+                    .stage(m.get_stage())
+                    .name(m.get_name())
+            })
+            .collect::<Vec<_>>();
+        let vertex_attribute_descriptions =
+            Vertex::vertex_attribute_descriptions(0);
+        let vertex_binding_descriptions =
+            Vertex::vertex_binding_descriptions(0, VertexInputRate::VERTEX);
+        let _vertex_input_state = PipelineVertexInputStateCreateInfo::default()
+            .vertex_attribute_descriptions(&vertex_attribute_descriptions)
+            .vertex_binding_descriptions(&vertex_binding_descriptions);
+        let _input_assembly_state =
+            PipelineInputAssemblyStateCreateInfo::default()
+                .topology(PrimitiveTopology::TRIANGLE_LIST)
+                .primitive_restart_enable(false);
+        let _input_assembly_state =
+            PipelineInputAssemblyStateCreateInfo::default()
+                .topology(PrimitiveTopology::TRIANGLE_STRIP)
+                .primitive_restart_enable(false);
+
+        let _rasterization_state =
+            PipelineRasterizationStateCreateInfo::default()
+                .depth_clamp_enable(false)
+                .rasterizer_discard_enable(false)
+                .polygon_mode(PolygonMode::FILL)
+                .line_width(1.0)
+                .cull_mode(CullModeFlags::BACK)
+                .front_face(FrontFace::COUNTER_CLOCKWISE)
+                .depth_bias_enable(false);
+        let _multisample_state = PipelineMultisampleStateCreateInfo::default()
+            .rasterization_samples(SampleCountFlags::TYPE_1);
+
+        let attachments = [PipelineColorBlendAttachmentState::default()
+            .dst_color_blend_factor(BlendFactor::ONE)
+            .color_write_mask(ColorComponentFlags::RGBA)];
+        let _color_blend_state = PipelineColorBlendStateCreateInfo::default()
+            .attachments(&attachments)
+            .logic_op_enable(false)
+            .logic_op(LogicOp::COPY)
+            .blend_constants([0.0, 0.0, 0.0, 0.0]);
+
+        let pipeline_ci = GraphicsPipelineCreateInfo::default()
+            .stages(&shader_stages)
+            .vertex_input_state(&_vertex_input_state)
+            .input_assembly_state(&_input_assembly_state)
+            .viewport_state(&_viewport_state)
+            .rasterization_state(&_rasterization_state)
+            .multisample_state(&_multisample_state)
+            .color_blend_state(&_color_blend_state)
+            .layout(pipeline_layout.as_inner())
+            .render_pass(render_pass.as_inner())
+            .subpass(0);
+        let pipeline =
+            //SAFETY: valid cis
+            unsafe { Pipeline::new_graphics_pipelines(device, &[pipeline_ci]) }
+                .map_err(|e| {
+                    UnknownVulkan("creating graphics pipeline".into(), e)
+                })?
+                .pop()
+                .expect("How did this not error yet return 0 pipelines?");
+        Ok(Self {
+            _swapchain: swapchain,
+            _pipeline: pipeline,
+        })
+    }
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum RenderSetupError {
+    #[error("Could not create swapchain")]
+    SwapchainCreation,
+    #[error("Unknown vulkan error while {0}. Error code {1:?}")]
+    UnknownVulkan(String, VkResult),
+}
+
 #[allow(dead_code)]
 #[derive(Debug, thiserror::Error)]
 pub enum ContextCreationError {
@@ -135,25 +289,26 @@ pub enum ContextCreationError {
     #[error("Instance creation failed")]
     InstanceCreation,
     #[error("Missing mandatory extensions {0:?}")]
-    _MissingMandatoryExtensions(Vec<String>),
+    MissingMandatoryExtensions(Vec<String>),
     #[error("No suitable devices")]
     NoSuitableDevice,
     #[error("Could not create device")]
     DeviceCreation,
     #[error("Could not create surface")]
     SurfaceCreation,
-    #[error("Could not create swapchain")]
-    SwapchainCreation,
+
     #[error("Could not create command buffers")]
     _CommandBufferCreation,
     #[error("Unknown vulkan error while {0}. Error code {1:?}")]
-    UnknownVulkan(String, vk::Result),
+    UnknownVulkan(String, VkResult),
     #[error("Error creating window: {0:?}")]
     WindowCreation(#[from] winit::error::OsError),
     #[error("Could not make shader compiler")]
     ShaderCompilerCreation,
     #[error("Compilation errors\n{0}")]
     ShaderLoading(#[from] ShaderModuleCreationErrors),
+    #[error("Render setup error: {0}")]
+    RenderSetup(#[from] RenderSetupError),
 }
 #[derive(thiserror::Error, Debug)]
 pub struct ShaderModuleCreationErrors(Vec<shader_module::Error>);
@@ -188,31 +343,32 @@ impl Context {
         event_loop: &ActiveEventLoop,
         mut opts: ContextCreateOpts,
     ) -> Result<Self, ContextCreationError> {
+        use ContextCreationError::*;
         let entry =
         //SAFETY: Must be dropped *after* instance, which we accomplish by
         //having instance hold on to a ref counted pointer to entry
-            Arc::new(unsafe { ash::Entry::load().map_err(ContextCreationError::Loading) }?);
+            Arc::new(unsafe { ash::Entry::load().map_err(Loading) }?);
         //SAFETY: Should be good?
         let vk_version = match unsafe { entry.try_enumerate_instance_version() }
         {
-            Ok(ver) => ver.unwrap_or(vk::API_VERSION_1_0),
+            Ok(ver) => ver.unwrap_or(API_VERSION_1_0),
 
             Err(_) => unreachable!(),
         };
         log::info!(
             "Available vk version {}.{}.{}",
-            vk::api_version_major(vk_version),
-            vk::api_version_minor(vk_version),
-            vk::api_version_patch(vk_version)
+            api_version_major(vk_version),
+            api_version_minor(vk_version),
+            api_version_patch(vk_version)
         );
-        let app_info = vk::ApplicationInfo::default()
+        let app_info = ApplicationInfo::default()
             .api_version(vk_version)
             .application_name(c"arpgn");
         let avail_extensions =
         //SAFETY: Should always be good
             unsafe { entry.enumerate_instance_extension_properties(None) }
                 .map_err(|e| {
-                    ContextCreationError::UnknownVulkan("enumerating instance extensions".to_owned(), e)
+                    UnknownVulkan("enumerating instance extensions".to_owned(), e)
                 })?;
         let windowing_required_extensions =
             ash_window::enumerate_required_extensions(
@@ -248,7 +404,7 @@ impl Context {
         }
 
         if !missing_mandatory_extensions.is_empty() {
-            return Err(ContextCreationError::_MissingMandatoryExtensions(
+            return Err(MissingMandatoryExtensions(
                 missing_mandatory_extensions,
             ));
         }
@@ -280,19 +436,19 @@ impl Context {
             layer_names.push(KHRONOS_VALIDATION_LAYER_NAME.as_ptr());
         }
 
-        let mut instance_create_info = vk::InstanceCreateInfo::default()
+        let mut instance_create_info = InstanceCreateInfo::default()
             .application_info(&app_info)
             .enabled_extension_names(&instance_exts)
             .enabled_layer_names(&layer_names);
 
         let all_debug_message_types =
-            vk::DebugUtilsMessageTypeFlagsEXT::DEVICE_ADDRESS_BINDING
-                | vk::DebugUtilsMessageTypeFlagsEXT::GENERAL
-                | vk::DebugUtilsMessageTypeFlagsEXT::PERFORMANCE
-                | vk::DebugUtilsMessageTypeFlagsEXT::VALIDATION;
+            DebugUtilsMessageTypeFlagsEXT::DEVICE_ADDRESS_BINDING
+                | DebugUtilsMessageTypeFlagsEXT::GENERAL
+                | DebugUtilsMessageTypeFlagsEXT::PERFORMANCE
+                | DebugUtilsMessageTypeFlagsEXT::VALIDATION;
 
         let mut debug_utils_messenger_ci =
-            vk::DebugUtilsMessengerCreateInfoEXT::default()
+            DebugUtilsMessengerCreateInfoEXT::default()
                 .message_severity(graphics_validation_sev_to_debug_utils_flags(
                     opts.graphics_validation_layers,
                 ))
@@ -308,7 +464,7 @@ impl Context {
             //SAFETY: Valid ci. We know because we made it and none of the lifetimes
             //involved have expired
             unsafe { Instance::new(&entry, &instance_create_info) }
-                .map_err(|_| ContextCreationError::InstanceCreation)?,
+                .map_err(|_| InstanceCreation)?,
         );
 
         let _debug_messenger = if opts.graphics_validation_layers
@@ -334,13 +490,11 @@ impl Context {
                         ),
                     ),
                 )
-                .map_err(ContextCreationError::WindowCreation)?,
+                .map_err(WindowCreation)?,
         );
 
-        let surface = Arc::new(
-            surface::Surface::new(&instance, &win)
-                .map_err(|_| ContextCreationError::SurfaceCreation)?,
-        );
+        let surface = surface::Surface::new(&instance, &win)
+            .map_err(|_| SurfaceCreation)?;
 
         let physical_devices = instance
             .get_physical_devices()
@@ -359,7 +513,7 @@ impl Context {
                     best_found
                 }
             })
-            .ok_or(ContextCreationError::NoSuitableDevice)?;
+            .ok_or(NoSuitableDevice)?;
         //TODO: Properly check for these extensions
         let device_extension_names = vec![ash::khr::swapchain::NAME.as_ptr()];
         let mut queue_family_indices = HashSet::with_capacity(2);
@@ -368,13 +522,13 @@ impl Context {
         let queue_create_infos: Vec<_> = queue_family_indices
             .iter()
             .map(|qfi| {
-                vk::DeviceQueueCreateInfo::default()
+                DeviceQueueCreateInfo::default()
                     .queue_family_index(*qfi)
                     .queue_priorities(&[1.0])
             })
             .collect();
         #[allow(deprecated)]
-        let dev_ci = vk::DeviceCreateInfo::default()
+        let dev_ci = DeviceCreateInfo::default()
             .enabled_extension_names(&device_extension_names)
             .queue_create_infos(&queue_create_infos)
             //We're using this to be compatible with older implementations. This
@@ -387,22 +541,11 @@ impl Context {
             unsafe {
                 Device::new(&instance, scored_phys_dev.phys_dev, &dev_ci)
             }
-            .map_err(|_| ContextCreationError::DeviceCreation)?,
+            .map_err(|_| DeviceCreation)?,
         );
 
-        //SAFETY: Device and surface are from the same instance
-        let swapchain = unsafe {
-            Swapchain::new(
-                &device,
-                &surface,
-                scored_phys_dev.graphics_queue_index,
-                scored_phys_dev.present_queue_index,
-            )
-        }
-        .map_err(|_| ContextCreationError::SwapchainCreation)?;
-
-        let shader_compiler = shaderc::Compiler::new()
-            .ok_or(ContextCreationError::ShaderCompilerCreation)?;
+        let shader_compiler =
+            shaderc::Compiler::new().ok_or(ShaderCompilerCreation)?;
 
         let vert_shader_path = Path::new("shaders/shader.vert");
 
@@ -410,7 +553,7 @@ impl Context {
             &device,
             &shader_compiler,
             vert_shader_path,
-            ShaderKind::Vertex,
+            ShaderStageFlags::VERTEX,
             "main",
             None,
         );
@@ -419,68 +562,21 @@ impl Context {
             &device,
             &shader_compiler,
             frag_shader_path,
-            ShaderKind::Fragment,
+            ShaderStageFlags::FRAGMENT,
             "main",
             None,
         );
 
-        let (_vert_shader_mod, _frag_shader_mod) =
+        let (vert_shader_mod, frag_shader_mod) =
             match (vert_shader_mod, frag_shader_mod) {
                 (Ok(mod1), Ok(mod2)) => Ok((mod1, mod2)),
                 (Err(e), Ok(_)) | (Ok(_), Err(e)) => {
-                    Err(ContextCreationError::ShaderLoading(
-                        ShaderModuleCreationErrors(vec![e]),
-                    ))
+                    Err(ShaderModuleCreationErrors(vec![e]))
                 }
-                (Err(e1), Err(e2)) => Err(ContextCreationError::ShaderLoading(
-                    ShaderModuleCreationErrors(vec![e1, e2]),
-                )),
+                (Err(e1), Err(e2)) => {
+                    Err(ShaderModuleCreationErrors(vec![e1, e2]))
+                }
             }?;
-        let vertex_attribute_descriptions =
-            Vertex::vertex_attribute_descriptions(0);
-        let vertex_binding_descriptions =
-            Vertex::vertex_binding_descriptions(0, vk::VertexInputRate::VERTEX);
-        let _vertex_input_state =
-            vk::PipelineVertexInputStateCreateInfo::default()
-                .vertex_attribute_descriptions(&vertex_attribute_descriptions)
-                .vertex_binding_descriptions(&vertex_binding_descriptions);
-        let _input_assembly_state =
-            vk::PipelineInputAssemblyStateCreateInfo::default()
-                .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
-                .primitive_restart_enable(false);
-        let _input_assembly_state =
-            vk::PipelineInputAssemblyStateCreateInfo::default()
-                .topology(vk::PrimitiveTopology::TRIANGLE_STRIP)
-                .primitive_restart_enable(false);
-
-        let viewports = [swapchain.default_viewport()];
-        let scissors = [swapchain.default_scissor()];
-
-        let _viewport_state = vk::PipelineViewportStateCreateInfo::default()
-            .viewports(&viewports)
-            .scissors(&scissors);
-
-        let _rasterization_state =
-            vk::PipelineRasterizationStateCreateInfo::default()
-                .depth_clamp_enable(false)
-                .rasterizer_discard_enable(false)
-                .polygon_mode(vk::PolygonMode::FILL)
-                .line_width(1.0)
-                .cull_mode(vk::CullModeFlags::BACK)
-                .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
-                .depth_bias_enable(false);
-        let _multisampling_state =
-            vk::PipelineMultisampleStateCreateInfo::default();
-
-        let attachments = [vk::PipelineColorBlendAttachmentState::default()
-            .dst_color_blend_factor(vk::BlendFactor::ONE)
-            .color_write_mask(vk::ColorComponentFlags::RGBA)];
-        let _color_blend_state =
-            vk::PipelineColorBlendStateCreateInfo::default()
-                .attachments(&attachments)
-                .logic_op_enable(false)
-                .logic_op(vk::LogicOp::COPY)
-                .blend_constants([0.0, 0.0, 0.0, 0.0]);
 
         let mut descriptor_requests = HashMap::with_capacity(1);
         descriptor_requests.insert(
@@ -494,36 +590,35 @@ impl Context {
 
         let descriptor_map =
             DescriptorSetMap::new(&device, descriptor_requests).map_err(
-                |err| {
-                    ContextCreationError::UnknownVulkan(
-                        "creating descriptor map".into(),
-                        err,
-                    )
-                },
+                |err| UnknownVulkan("creating descriptor map".into(), err),
             )?;
         let descriptor_set_layouts = [descriptor_map.layout_handle()];
         let pipeline_layout_ci = PipelineLayoutCreateInfo::default()
             .set_layouts(&descriptor_set_layouts);
 
-        //SAFETY: Valid ci
-        let _pipeline_layout = unsafe {
-            pipeline_layout::PipelineLayout::new(&device, &pipeline_layout_ci)
-        }
-        .map_err(|err| {
-            ContextCreationError::UnknownVulkan(
-                "creation of pipeline layout".into(),
-                err,
-            )
-        })?;
+        let pipeline_layout =
+            //SAFETY: Valid ci
+            unsafe { PipelineLayout::new(&device, &pipeline_layout_ci) }
+                .map_err(|e| {
+                    UnknownVulkan(
+                        "creating pipeline layout".into(),
+                        e,
+                    )
+                })?;
 
         Ok(Context {
             win,
-            _nd: ContextNonDebug {
-                _entry: entry,
-                _instance: instance,
-                _debug_messenger,
-                _swapchain: swapchain,
-            },
+
+            _instance: instance,
+            _debug_messenger,
+            _surface_derived: Some(SurfaceDerived::new(
+                &device,
+                Arc::new(surface),
+                scored_phys_dev.graphics_queue_index,
+                scored_phys_dev.present_queue_index,
+                &[&vert_shader_mod, &frag_shader_mod],
+                pipeline_layout,
+            )?),
         })
     }
     pub fn resize(&mut self) {}
@@ -536,7 +631,7 @@ impl Context {
 
 struct ScoredPhysDev {
     score: u64,
-    phys_dev: vk::PhysicalDevice,
+    phys_dev: PhysicalDevice,
     graphics_queue_index: u32,
     present_queue_index: u32,
 }
@@ -566,7 +661,7 @@ impl Eq for ScoredPhysDev {}
 //derived from instance.
 unsafe fn evaluate_physical_device(
     instance: &Instance,
-    phys_dev: vk::PhysicalDevice,
+    phys_dev: PhysicalDevice,
     surface: &Surface,
 ) -> Option<ScoredPhysDev> {
     //SAFETY:phys_dev must be derived from instance
@@ -577,7 +672,7 @@ unsafe fn evaluate_physical_device(
         .iter()
         .enumerate()
         .find(|(qfi, qfp)| {
-            qfp.queue_flags.intersects(vk::QueueFlags::GRAPHICS)
+            qfp.queue_flags.intersects(QueueFlags::GRAPHICS)
             //SAFETY: qfi is in bounds, phys_dev comes from same instance as
             //surface
                 && unsafe {
@@ -591,7 +686,7 @@ unsafe fn evaluate_physical_device(
                 .iter()
                 .enumerate()
                 .find(|(_, qfp)| {
-                    qfp.queue_flags.intersects(vk::QueueFlags::GRAPHICS)
+                    qfp.queue_flags.intersects(QueueFlags::GRAPHICS)
                 })
         })
         .map(|(i, _)| i as u32);
@@ -642,9 +737,9 @@ unsafe fn evaluate_physical_device(
                 //Weight CPUs more highly based on what type they are. If unknown,
                 //just return some weird low value but better than CPU
                 let device_type_score = match properties.props.device_type {
-                    vk::PhysicalDeviceType::DISCRETE_GPU => 1000,
-                    vk::PhysicalDeviceType::INTEGRATED_GPU => 500,
-                    vk::PhysicalDeviceType::CPU => 0,
+                    PhysicalDeviceType::DISCRETE_GPU => 1000,
+                    PhysicalDeviceType::INTEGRATED_GPU => 500,
+                    PhysicalDeviceType::CPU => 0,
                     _ => 100,
                 };
                 //If multiple of same category, pick the one with a shared graphics and presentation queue
@@ -669,12 +764,12 @@ unsafe fn evaluate_physical_device(
 
 fn graphics_validation_sev_to_debug_utils_flags(
     graphics_validation_layers: ValidationLevel,
-) -> vk::DebugUtilsMessageSeverityFlagsEXT {
-    let none = vk::DebugUtilsMessageSeverityFlagsEXT::empty();
-    let error = none | vk::DebugUtilsMessageSeverityFlagsEXT::ERROR;
-    let warning = error | vk::DebugUtilsMessageSeverityFlagsEXT::WARNING;
-    let info = warning | vk::DebugUtilsMessageSeverityFlagsEXT::INFO;
-    let verbose = info | vk::DebugUtilsMessageSeverityFlagsEXT::VERBOSE;
+) -> DebugUtilsMessageSeverityFlagsEXT {
+    let none = DebugUtilsMessageSeverityFlagsEXT::empty();
+    let error = none | DebugUtilsMessageSeverityFlagsEXT::ERROR;
+    let warning = error | DebugUtilsMessageSeverityFlagsEXT::WARNING;
+    let info = warning | DebugUtilsMessageSeverityFlagsEXT::INFO;
+    let verbose = info | DebugUtilsMessageSeverityFlagsEXT::VERBOSE;
     match graphics_validation_layers {
         ValidationLevel::None => none,
         ValidationLevel::Error => error,

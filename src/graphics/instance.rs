@@ -14,7 +14,11 @@ use std::{fmt::Debug, sync::Arc};
 
 use ash::{
     prelude::VkResult,
-    vk::{self, Handle, InstanceCreateInfo},
+    vk::{
+        ExtensionProperties, Handle, InstanceCreateInfo, PhysicalDevice,
+        PhysicalDeviceFeatures, PhysicalDeviceProperties,
+        QueueFamilyProperties,
+    },
     Entry,
 };
 
@@ -60,16 +64,14 @@ impl Instance {
         &self.inner
     }
 
-    pub(super) fn get_physical_devices(
-        &self,
-    ) -> VkResult<Vec<vk::PhysicalDevice>> {
+    pub(super) fn get_physical_devices(&self) -> VkResult<Vec<PhysicalDevice>> {
         //SAFETY: Should always be safe
         unsafe { self.inner.enumerate_physical_devices() }
     }
     //SAFETY REQUIREMENTS: phys_dev must be derived from self
     pub(super) unsafe fn get_relevant_physical_device_properties(
         &self,
-        phys_dev: vk::PhysicalDevice,
+        phys_dev: PhysicalDevice,
     ) -> PhysDevProps {
         let props =
         //SAFETY: phys_dev from self
@@ -97,8 +99,8 @@ impl Instance {
 }
 
 pub struct PhysDevProps {
-    pub props: vk::PhysicalDeviceProperties,
-    pub _features: vk::PhysicalDeviceFeatures,
-    pub queue_families: Vec<vk::QueueFamilyProperties>,
-    pub extensions: Vec<vk::ExtensionProperties>,
+    pub props: PhysicalDeviceProperties,
+    pub _features: PhysicalDeviceFeatures,
+    pub queue_families: Vec<QueueFamilyProperties>,
+    pub extensions: Vec<ExtensionProperties>,
 }

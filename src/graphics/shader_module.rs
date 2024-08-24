@@ -8,12 +8,19 @@
 // * Do not destroy except in drop
 
 use std::{
+    ffi::{CStr, CString},
     io::Read,
     path::{Path, PathBuf},
     sync::Arc,
 };
 
-use ash::vk;
+use ash::vk::{
+    Result as RawVkResult, ShaderModule as RawShaderModule,
+    ShaderModuleCreateInfo, ShaderStageFlags,
+};
+use shaderc::ShaderKind;
+
+use super::Device;
 
 #[derive(Debug)]
 
@@ -25,8 +32,11 @@ pub enum Error {
 
 #[derive(Debug)]
 pub struct ShaderModule {
-    inner: vk::ShaderModule,
-    parent: Arc<super::Device>,
+    inner: RawShaderModule,
+
+    parent: Arc<Device>,
+    ty: ShaderStageFlags,
+    name: CString,
 }
 
 impl Drop for ShaderModule {
@@ -44,13 +54,14 @@ impl Drop for ShaderModule {
 
 impl ShaderModule {
     pub fn new(
-        device: &Arc<super::Device>,
+        device: &Arc<Device>,
         shader_compiler: &shaderc::Compiler,
         shader_path: &Path,
-        ty: shaderc::ShaderKind,
+        ty: ShaderStageFlags,
         entry: &str,
         options: Option<&shaderc::CompileOptions>,
     ) -> Result<Self, Error> {
+        use Error::*;
         let mut file = std::fs::File::open(shader_path)
             .map_err(|err| Error::FileLoad(shader_path.into(), err))?;
 
@@ -64,22 +75,21 @@ impl ShaderModule {
         let spirv = shader_compiler
             .compile_into_spirv(
                 &source,
-                ty,
+                Self::shader_stage_flags_to_kind(ty),
                 shader_path.to_str().unwrap(),
                 entry,
                 options,
             )
-            .map_err(|err| Error::ShaderCompilation(err))?;
+            .map_err(|err| ShaderCompilation(err))?;
 
         let inner = {
-            let ci =
-                vk::ShaderModuleCreateInfo::default().code(spirv.as_binary());
+            let ci = ShaderModuleCreateInfo::default().code(spirv.as_binary());
             //SAFETY: Passing valid code to the ci. Shaderc's job
             unsafe { device.as_inner_ref().create_shader_module(&ci, None) }
                 .map_err(|err| match err {
-                    vk::Result::ERROR_OUT_OF_HOST_MEMORY
-                    | vk::Result::ERROR_OUT_OF_DEVICE_MEMORY => {
-                        Error::MemoryExhaustion
+                    RawVkResult::ERROR_OUT_OF_HOST_MEMORY
+                    | RawVkResult::ERROR_OUT_OF_DEVICE_MEMORY => {
+                        MemoryExhaustion
                     }
                     _ => unreachable!(),
                 })
@@ -87,6 +97,29 @@ impl ShaderModule {
         Ok(Self {
             inner,
             parent: device.clone(),
+            ty,
+            name: CString::new(entry).unwrap(),
         })
+    }
+
+    fn shader_stage_flags_to_kind(flags: ShaderStageFlags) -> ShaderKind {
+        use ShaderKind::*;
+        if flags.intersects(ShaderStageFlags::VERTEX) {
+            Vertex
+        } else if flags.intersects(ShaderStageFlags::FRAGMENT) {
+            Fragment
+        } else {
+            todo!()
+        }
+    }
+
+    pub(crate) fn as_raw(&self) -> RawShaderModule {
+        self.inner
+    }
+    pub fn get_stage(&self) -> ShaderStageFlags {
+        self.ty
+    }
+    pub fn get_name(&self) -> &CStr {
+        &self.name
     }
 }

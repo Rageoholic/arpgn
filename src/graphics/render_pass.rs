@@ -1,0 +1,45 @@
+use std::sync::Arc;
+
+use ash::{
+    prelude::VkResult, vk::RenderPass as RawRenderPass,
+    vk::RenderPassCreateInfo,
+};
+
+use super::device::Device;
+
+pub struct RenderPass {
+    inner: RawRenderPass,
+    parent: Arc<Device>,
+}
+
+impl Drop for RenderPass {
+    fn drop(&mut self) {
+        //SAFETY: inner came from parent
+        unsafe {
+            self.parent
+                .as_inner_ref()
+                .destroy_render_pass(self.inner, None)
+        };
+    }
+}
+
+impl RenderPass {
+    // SAFETY REQUIREMENTS: valid ci
+    pub unsafe fn new(
+        device: &Arc<Device>,
+        ci: &RenderPassCreateInfo,
+    ) -> VkResult<Self> {
+        let inner =
+            //SAFETY: valid ci
+            unsafe { device.as_inner_ref().create_render_pass(ci, None) }?;
+
+        Ok(Self {
+            inner,
+            parent: device.clone(),
+        })
+    }
+
+    pub(crate) fn as_inner(&self) -> RawRenderPass {
+        self.inner
+    }
+}

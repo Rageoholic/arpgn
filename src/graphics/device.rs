@@ -19,16 +19,19 @@ use std::{
 
 use ash::{
     prelude::VkResult,
-    vk::{self, Handle},
+    vk::{
+        DeviceCreateInfo, Fence, Handle, PhysicalDevice, Queue,
+        Result as RawVkResult, SubmitInfo,
+    },
 };
 
 use super::instance::Instance;
 
 pub struct Device {
     inner: ash::Device,
-    phys_dev: vk::PhysicalDevice,
+    phys_dev: PhysicalDevice,
     parent: Arc<super::Instance>,
-    _queue_families: HashMap<u32, Vec<RwLock<vk::Queue>>>,
+    _queue_families: HashMap<u32, Vec<RwLock<Queue>>>,
 }
 
 impl Debug for Device {
@@ -54,8 +57,8 @@ impl Device {
     //SAFETY REQUIREMENTS: Valid ci and phys_dev derived from instance
     pub unsafe fn new(
         instance: &Arc<super::Instance>,
-        phys_dev: vk::PhysicalDevice,
-        ci: &vk::DeviceCreateInfo,
+        phys_dev: PhysicalDevice,
+        ci: &DeviceCreateInfo,
     ) -> VkResult<Self> {
         //SAFETY: valid ci. phys_dev derived from instance. Preconditions of
         //this unsafe function
@@ -102,8 +105,8 @@ impl Device {
 
         family: u32,
         queue_index: u32,
-        submits: &[vk::SubmitInfo],
-        fence: vk::Fence,
+        submits: &[SubmitInfo],
+        fence: Fence,
     ) -> _QueueSubmitResult {
         let lock = self
             ._queue_families
@@ -121,7 +124,7 @@ impl Device {
         unsafe { self.inner.queue_submit(*lock, submits, fence) }
             .map_err(_QueueSubmitError::Vulkan)
     }
-    pub(super) fn get_physical_device_handle(&self) -> vk::PhysicalDevice {
+    pub(super) fn get_physical_device_handle(&self) -> PhysicalDevice {
         self.phys_dev
     }
 
@@ -135,7 +138,7 @@ impl Device {
     }
 }
 pub enum _QueueSubmitError {
-    Vulkan(vk::Result),
+    Vulkan(RawVkResult),
     NoSuchQueue,
 }
 

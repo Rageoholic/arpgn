@@ -7,20 +7,29 @@
 
 use std::{cmp::min, sync::Arc};
 
-use ash::{prelude::VkResult, vk};
+use ash::{
+    prelude::VkResult,
+    vk::{
+        ColorSpaceKHR, ComponentMapping, CompositeAlphaFlagsKHR, Extent2D,
+        Format, ImageAspectFlags, ImageSubresourceRange, ImageUsageFlags,
+        ImageView, ImageViewCreateInfo, ImageViewType, Offset2D,
+        PresentModeKHR, Rect2D, SharingMode, SurfaceFormatKHR,
+        SwapchainCreateInfoKHR, SwapchainKHR, Viewport,
+    },
+};
 
 use super::{device::Device, Surface};
 
 pub(super) struct Swapchain {
     swapchain_device: ash::khr::swapchain::Device,
-    inner: vk::SwapchainKHR,
+    inner: SwapchainKHR,
     //NOTE: Exist for RAII reasons. These will keep the device and surface open
     //until this drops
     parent_device: Arc<Device>,
     _parent_surface: Arc<Surface>,
-    _format: vk::SurfaceFormatKHR,
-    image_views: Vec<vk::ImageView>,
-    extent: vk::Extent2D,
+    format: SurfaceFormatKHR,
+    image_views: Vec<ImageView>,
+    extent: Extent2D,
 }
 
 impl std::fmt::Debug for Swapchain {
@@ -29,7 +38,7 @@ impl std::fmt::Debug for Swapchain {
             .field("inner", &self.inner)
             .field("parent_device", &self.parent_device)
             .field("_parent_surface", &self._parent_surface)
-            .field("_format", &self._format)
+            .field("_format", &self.format)
             .field("extent", &self.extent)
             .finish_non_exhaustive()
     }
@@ -53,8 +62,8 @@ impl Swapchain {
             .formats
             .iter()
             .find(|format| {
-                format.color_space == vk::ColorSpaceKHR::SRGB_NONLINEAR
-                    && format.format == vk::Format::B8G8R8A8_SRGB
+                format.color_space == ColorSpaceKHR::SRGB_NONLINEAR
+                    && format.format == Format::B8G8R8A8_SRGB
             })
             .copied()
             //NOTE: Crashing because somehow we got here with no available
@@ -64,22 +73,22 @@ impl Swapchain {
             .present_modes
             .iter()
             .copied()
-            .find(|pm| *pm == vk::PresentModeKHR::MAILBOX)
+            .find(|pm| *pm == PresentModeKHR::MAILBOX)
             .or_else(|| {
                 swap_info
                     .present_modes
                     .iter()
                     .copied()
-                    .find(|pm| *pm == vk::PresentModeKHR::IMMEDIATE)
+                    .find(|pm| *pm == PresentModeKHR::IMMEDIATE)
             })
-            .unwrap_or(vk::PresentModeKHR::FIFO);
+            .unwrap_or(PresentModeKHR::FIFO);
         let win_size = surface.get_size();
 
         let swap_extent =
             if swap_info.capabilities.current_extent.width != u32::MAX {
                 swap_info.capabilities.current_extent
             } else {
-                vk::Extent2D {
+                Extent2D {
                     width: win_size.width.clamp(
                         swap_info.capabilities.min_image_extent.width,
                         swap_info.capabilities.max_image_extent.width,
@@ -101,28 +110,28 @@ impl Swapchain {
         );
         let mut indices = Vec::with_capacity(2);
         let sharing_mode = if graphics_qfi == present_qfi {
-            vk::SharingMode::EXCLUSIVE
+            SharingMode::EXCLUSIVE
         } else {
             indices.push(graphics_qfi);
             indices.push(present_qfi);
-            vk::SharingMode::CONCURRENT
+            SharingMode::CONCURRENT
         };
 
-        let ci = vk::SwapchainCreateInfoKHR::default()
+        let ci = SwapchainCreateInfoKHR::default()
             .surface(surface.get_inner())
             .min_image_count(image_count)
             .image_format(format.format)
             .image_color_space(format.color_space)
             .image_extent(swap_extent)
             .image_array_layers(1)
-            .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT)
+            .image_usage(ImageUsageFlags::COLOR_ATTACHMENT)
             .image_sharing_mode(sharing_mode)
             .queue_family_indices(&indices)
             .pre_transform(swap_info.capabilities.current_transform)
-            .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
+            .composite_alpha(CompositeAlphaFlagsKHR::OPAQUE)
             .present_mode(present_mode)
             .clipped(true)
-            .old_swapchain(vk::SwapchainKHR::null());
+            .old_swapchain(SwapchainKHR::null());
 
         let swapchain_device = ash::khr::swapchain::Device::new(
             device.parent().as_inner_ref(),
@@ -140,18 +149,18 @@ impl Swapchain {
         let mut image_views = Vec::with_capacity(swapchain_images.len());
 
         for image in swapchain_images {
-            let components = vk::ComponentMapping::default();
-            let subresource_range = vk::ImageSubresourceRange::default()
-                .aspect_mask(vk::ImageAspectFlags::COLOR)
+            let components = ComponentMapping::default();
+            let subresource_range = ImageSubresourceRange::default()
+                .aspect_mask(ImageAspectFlags::COLOR)
                 .base_mip_level(0)
                 .level_count(1)
                 .base_array_layer(0)
                 .layer_count(1);
-            let image_view_ci = vk::ImageViewCreateInfo::default()
+            let image_view_ci = ImageViewCreateInfo::default()
                 .components(components)
                 .subresource_range(subresource_range)
                 .format(format.format)
-                .view_type(vk::ImageViewType::TYPE_2D)
+                .view_type(ImageViewType::TYPE_2D)
                 .image(image);
             //SAFETY: We know image_view_ci is valid
             let image_view = unsafe {
@@ -168,14 +177,14 @@ impl Swapchain {
             inner,
             swapchain_device,
             image_views,
-            _format: format,
+            format,
             parent_device: device.clone(),
             _parent_surface: surface.clone(),
             extent: swap_extent,
         })
     }
-    pub fn default_viewport(&self) -> vk::Viewport {
-        vk::Viewport {
+    pub fn default_viewport(&self) -> Viewport {
+        Viewport {
             x: 0f32,
             y: 0 as f32,
             width: self.extent.width as f32,
@@ -184,11 +193,15 @@ impl Swapchain {
             max_depth: 1.0,
         }
     }
-    pub fn default_scissor(&self) -> vk::Rect2D {
-        vk::Rect2D {
-            offset: vk::Offset2D { x: 0, y: 0 },
+    pub fn default_scissor(&self) -> Rect2D {
+        Rect2D {
+            offset: Offset2D { x: 0, y: 0 },
             extent: self.extent,
         }
+    }
+
+    pub(crate) fn get_format(&self) -> Format {
+        self.format.format
     }
 }
 

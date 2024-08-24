@@ -6,13 +6,14 @@
 
 use std::sync::Arc;
 
-use ash::{prelude::VkResult, vk};
+use ash::prelude::VkResult;
+use ash::vk::{PipelineLayout as RawPipelineLayout, PipelineLayoutCreateInfo};
 
 use super::Device;
 
 #[derive(Debug)]
 pub struct PipelineLayout {
-    inner: vk::PipelineLayout,
+    inner: RawPipelineLayout,
     parent: Arc<Device>,
 }
 
@@ -31,7 +32,7 @@ impl PipelineLayout {
     //SAFETY REQUIREMENTS: Valid ci
     pub unsafe fn new(
         device: &Arc<Device>,
-        ci: &vk::PipelineLayoutCreateInfo,
+        ci: &PipelineLayoutCreateInfo,
     ) -> VkResult<Self> {
         let inner =
             // SAFETY: valid ci. Preconditions of this unsafe function
@@ -40,5 +41,9 @@ impl PipelineLayout {
             inner,
             parent: device.clone(),
         })
+    }
+
+    pub(crate) fn as_inner(&self) -> RawPipelineLayout {
+        self.inner
     }
 }

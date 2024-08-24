@@ -10,7 +10,8 @@ use std::{collections::HashMap, hash::Hash, sync::Arc};
 use ash::{
     prelude::VkResult,
     vk::{
-        self, DescriptorPoolSize, DescriptorSetAllocateInfo,
+        DescriptorPool, DescriptorPoolCreateInfo, DescriptorPoolSize,
+        DescriptorSet, DescriptorSetAllocateInfo, DescriptorSetLayout,
         DescriptorSetLayoutBinding, DescriptorSetLayoutCreateInfo,
         DescriptorType,
     },
@@ -23,10 +24,10 @@ pub struct DescriptorSetMap<Key>
 where
     Key: Hash + Eq,
 {
-    inner_pool: vk::DescriptorPool,
+    inner_pool: DescriptorPool,
     parent: Arc<Device>,
-    _sets: HashMap<Key, Vec<vk::DescriptorSet>>,
-    layout: vk::DescriptorSetLayout,
+    _sets: HashMap<Key, Vec<DescriptorSet>>,
+    layout: DescriptorSetLayout,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -90,7 +91,7 @@ impl<Key: Hash + Eq> DescriptorSetMap<Key> {
                 cum + request.count
             });
 
-        let ci = vk::DescriptorPoolCreateInfo::default()
+        let ci = DescriptorPoolCreateInfo::default()
             .max_sets(max_sets)
             .pool_sizes(&descriptor_pool_sizes);
 
@@ -122,17 +123,17 @@ impl<Key: Hash + Eq> DescriptorSetMap<Key> {
     pub fn _get_descriptor_bucket_mut(
         &mut self,
         k: &Key,
-    ) -> Option<&mut Vec<vk::DescriptorSet>> {
+    ) -> Option<&mut Vec<DescriptorSet>> {
         self._sets.get_mut(k)
     }
     pub fn _get_descriptor_bucket(
         &self,
         k: &Key,
-    ) -> Option<&Vec<vk::DescriptorSet>> {
+    ) -> Option<&Vec<DescriptorSet>> {
         self._sets.get(k)
     }
 
-    pub fn layout_handle(&self) -> vk::DescriptorSetLayout {
+    pub fn layout_handle(&self) -> DescriptorSetLayout {
         self.layout
     }
 }

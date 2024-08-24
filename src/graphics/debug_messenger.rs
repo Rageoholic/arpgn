@@ -13,13 +13,17 @@ use std::{
 use ash::{
     ext::debug_utils,
     prelude::VkResult,
-    vk::{self, DebugUtilsMessengerCreateInfoEXT},
+    vk::{
+        DebugUtilsMessageSeverityFlagsEXT, DebugUtilsMessageTypeFlagsEXT,
+        DebugUtilsMessengerCallbackDataEXT, DebugUtilsMessengerCreateInfoEXT,
+        DebugUtilsMessengerEXT,
+    },
 };
 
 use super::Instance;
 
 pub(super) struct DebugMessenger {
-    inner: vk::DebugUtilsMessengerEXT,
+    inner: DebugUtilsMessengerEXT,
     _parent: Arc<Instance>,
     instance: debug_utils::Instance,
 }
@@ -65,12 +69,12 @@ impl DebugMessenger {
     #[allow(dead_code)]
     pub(super) fn send_message(
         &self,
-        message_severity: vk::DebugUtilsMessageSeverityFlagsEXT,
-        message_types: vk::DebugUtilsMessageTypeFlagsEXT,
+        message_severity: DebugUtilsMessageSeverityFlagsEXT,
+        message_types: DebugUtilsMessageTypeFlagsEXT,
         message: &CStr,
     ) {
         let callback_data =
-            vk::DebugUtilsMessengerCallbackDataEXT::default().message(message);
+            DebugUtilsMessengerCallbackDataEXT::default().message(message);
         //SAFETY: We made callback_data ourselves
         unsafe {
             self.instance.submit_debug_utils_message(
@@ -86,9 +90,9 @@ impl DebugMessenger {
 //Otherwise requires that all pointers passed are valid and the object pointed
 //to by callback_data has all of *it's* pointers valid
 pub(super) unsafe extern "system" fn default_debug_callback(
-    sev: vk::DebugUtilsMessageSeverityFlagsEXT,
-    message_type: vk::DebugUtilsMessageTypeFlagsEXT,
-    callback_data: *const vk::DebugUtilsMessengerCallbackDataEXT,
+    sev: DebugUtilsMessageSeverityFlagsEXT,
+    message_type: DebugUtilsMessageTypeFlagsEXT,
+    callback_data: *const DebugUtilsMessengerCallbackDataEXT,
     _user_data: *mut c_void,
 ) -> u32 {
     //SAFETY: Assuming callback_data is valid
@@ -105,28 +109,28 @@ pub(super) unsafe extern "system" fn default_debug_callback(
 
     let message_type = debug_utils_message_type_to_str(message_type);
     match sev {
-        vk::DebugUtilsMessageSeverityFlagsEXT::ERROR => {
+        DebugUtilsMessageSeverityFlagsEXT::ERROR => {
             log::error!(
                 target:message_type,
                 "{:?}: {:?}",
                 log_id_cstr, log_cstr
             )
         }
-        vk::DebugUtilsMessageSeverityFlagsEXT::WARNING => {
+        DebugUtilsMessageSeverityFlagsEXT::WARNING => {
             log::warn!(
                 target:message_type,
                 "{:?}: {:?}",
                 log_id_cstr, log_cstr
             )
         }
-        vk::DebugUtilsMessageSeverityFlagsEXT::INFO => {
+        DebugUtilsMessageSeverityFlagsEXT::INFO => {
             log::info!(
                 target:message_type,
                 "{:?}: {:?}",
                 log_id_cstr, log_cstr
             )
         }
-        vk::DebugUtilsMessageSeverityFlagsEXT::VERBOSE => {
+        DebugUtilsMessageSeverityFlagsEXT::VERBOSE => {
             log::trace!(
                 target:message_type,
                 "{:?}: {:?}",
@@ -147,19 +151,19 @@ pub(super) unsafe extern "system" fn default_debug_callback(
 }
 
 fn debug_utils_message_type_to_str(
-    message_type: vk::DebugUtilsMessageTypeFlagsEXT,
+    message_type: DebugUtilsMessageTypeFlagsEXT,
 ) -> &'static str {
     match message_type {
-        vk::DebugUtilsMessageTypeFlagsEXT::GENERAL => {
+        DebugUtilsMessageTypeFlagsEXT::GENERAL => {
             "graphics_subsystem.debug_utils.general"
         }
-        vk::DebugUtilsMessageTypeFlagsEXT::PERFORMANCE => {
+        DebugUtilsMessageTypeFlagsEXT::PERFORMANCE => {
             "graphics_subsystem.debug_utils.perf"
         }
-        vk::DebugUtilsMessageTypeFlagsEXT::VALIDATION => {
+        DebugUtilsMessageTypeFlagsEXT::VALIDATION => {
             "graphics_subsystem.debug_utils.validation"
         }
-        vk::DebugUtilsMessageTypeFlagsEXT::DEVICE_ADDRESS_BINDING => {
+        DebugUtilsMessageTypeFlagsEXT::DEVICE_ADDRESS_BINDING => {
             "graphics_subsystem.debug_utils.device_address_binding"
         }
         _ => "graphics_subsystem.debug_utils.unknown",
