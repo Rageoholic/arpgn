@@ -14,14 +14,15 @@ use ash::{
         api_version_major, api_version_minor, api_version_patch,
         ApplicationInfo, AttachmentDescription, AttachmentLoadOp,
         AttachmentReference, AttachmentStoreOp, BlendFactor,
-        ColorComponentFlags, CullModeFlags, DebugUtilsMessageSeverityFlagsEXT,
-        DebugUtilsMessageTypeFlagsEXT, DebugUtilsMessengerCreateInfoEXT,
-        DescriptorPoolCreateInfo, DescriptorPoolSize,
-        DescriptorSetAllocateInfo, DescriptorSetLayoutBinding,
-        DescriptorSetLayoutCreateInfo, DescriptorType, DeviceCreateInfo,
-        DeviceQueueCreateInfo, Format, FrontFace, GraphicsPipelineCreateInfo,
-        ImageLayout, InstanceCreateInfo, LogicOp, PhysicalDevice,
-        PhysicalDeviceType, PipelineBindPoint,
+        ColorComponentFlags, CommandBufferLevel, CommandPoolCreateFlags,
+        CommandPoolCreateInfo, CullModeFlags,
+        DebugUtilsMessageSeverityFlagsEXT, DebugUtilsMessageTypeFlagsEXT,
+        DebugUtilsMessengerCreateInfoEXT, DescriptorPoolCreateInfo,
+        DescriptorPoolSize, DescriptorSetAllocateInfo,
+        DescriptorSetLayoutBinding, DescriptorSetLayoutCreateInfo,
+        DescriptorType, DeviceCreateInfo, DeviceQueueCreateInfo, Format,
+        FrontFace, GraphicsPipelineCreateInfo, ImageLayout, InstanceCreateInfo,
+        LogicOp, PhysicalDevice, PhysicalDeviceType, PipelineBindPoint,
         PipelineColorBlendAttachmentState, PipelineColorBlendStateCreateInfo,
         PipelineInputAssemblyStateCreateInfo, PipelineLayoutCreateInfo,
         PipelineMultisampleStateCreateInfo,
@@ -34,6 +35,7 @@ use ash::{
     },
     LoadingError,
 };
+use command_buffers::CommandPool;
 use debug_messenger::DebugMessenger;
 use descriptor_sets::{DescriptorPool, DescriptorSet, DescriptorSetLayout};
 use device::Device;
@@ -60,6 +62,7 @@ const DEFAULT_WINDOW_WIDTH: u32 = 1280;
 
 const DEFAULT_WINDOW_HEIGHT: u32 = 720;
 
+mod command_buffers;
 mod debug_messenger;
 mod descriptor_sets;
 mod device;
@@ -123,8 +126,8 @@ pub struct Context {
     win: Arc<Window>,
     _instance: Arc<Instance>,
     _debug_messenger: Option<DebugMessenger>,
-
     _surface_derived: Option<SurfaceDerived>,
+    _command_buffers: Vec<command_buffers::CommandBuffer>,
     _descriptor_sets: Vec<DescriptorSet>,
 }
 
@@ -148,8 +151,9 @@ pub type PhantomUnsendUnsync = PhantomData<*const ()>;
 
 #[derive(Debug)]
 struct SurfaceDerived {
-    _swapchain: Swapchain,
+    _swapchain: Arc<Swapchain>,
     _pipeline: Pipeline,
+    _swapchain_framebuffers: Vec<swapchain::SwapchainFramebuffer>,
 }
 impl SurfaceDerived {
     fn new(
@@ -161,16 +165,19 @@ impl SurfaceDerived {
         pipeline_layout: PipelineLayout,
     ) -> Result<Self, RenderSetupError> {
         use RenderSetupError::*;
-        //SAFETY: Device and surface are from the same instance
-        let swapchain = unsafe {
-            Swapchain::new(
-                device,
-                &surface,
-                present_queue_index,
-                graphics_queue_index,
-            )
-        }
-        .map_err(|_| SwapchainCreation)?;
+        let swapchain = Arc::new(
+            //SAFETY: Device and surface are from the same instance
+            unsafe {
+                Swapchain::new(
+                    device,
+                    &surface,
+                    present_queue_index,
+                    graphics_queue_index,
+                    None,
+                )
+            }
+            .map_err(|_| SwapchainCreation)?,
+        );
         let viewports = [swapchain.default_viewport()];
         let scissors = [swapchain.default_scissor()];
         let color_attachment = AttachmentDescription::default()
@@ -274,9 +281,15 @@ impl SurfaceDerived {
                 })?
                 .pop()
                 .expect("How did this not error yet return 0 pipelines?");
+        let swapchain_framebuffers = swapchain
+            .create_compatible_framebuffers(&render_pass)
+            .map_err(|e| {
+                UnknownVulkan("While creating framebuffers".to_owned(), e)
+            })?;
         Ok(Self {
             _swapchain: swapchain,
             _pipeline: pipeline,
+            _swapchain_framebuffers: swapchain_framebuffers,
         })
     }
 }
@@ -306,7 +319,7 @@ pub enum ContextCreationError {
     SurfaceCreation,
 
     #[error("Could not create command buffers")]
-    _CommandBufferCreation,
+    CommandBufferCreation,
     #[error("Unknown vulkan error while {0}. Error code {1:?}")]
     UnknownVulkan(String, VkResult),
     #[error("Error creating window: {0:?}")]
@@ -639,9 +652,24 @@ impl Context {
                         e,
                     )
                 })?;
+        let command_pool_ci = CommandPoolCreateInfo::default()
+            .queue_family_index(scored_phys_dev.graphics_queue_index)
+            .flags(CommandPoolCreateFlags::RESET_COMMAND_BUFFER);
+        let command_pool = Rc::new(
+            //SAFETY: Valid ci
+            unsafe { CommandPool::new(&device, &command_pool_ci) }
+                .map_err(|_| CommandBufferCreation)?,
+        );
 
+        let command_buffers = command_pool
+            .alloc_command_buffers(
+                MAX_FRAMES_IN_FLIGHT,
+                CommandBufferLevel::PRIMARY,
+            )
+            .map_err(|_| CommandBufferCreation)?;
         Ok(Context {
             win,
+            _command_buffers: command_buffers,
             _descriptor_sets: descriptor_sets,
             _instance: instance,
             _debug_messenger,

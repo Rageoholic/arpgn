@@ -11,14 +11,15 @@ use ash::{
     prelude::VkResult,
     vk::{
         ColorSpaceKHR, ComponentMapping, CompositeAlphaFlagsKHR, Extent2D,
-        Format, ImageAspectFlags, ImageSubresourceRange, ImageUsageFlags,
-        ImageView, ImageViewCreateInfo, ImageViewType, Offset2D,
-        PresentModeKHR, Rect2D, SharingMode, SurfaceFormatKHR,
-        SwapchainCreateInfoKHR, SwapchainKHR, Viewport,
+        Format, Framebuffer as RawFramebuffer, FramebufferCreateInfo,
+        ImageAspectFlags, ImageSubresourceRange, ImageUsageFlags, ImageView,
+        ImageViewCreateInfo, ImageViewType, Offset2D, PresentModeKHR, Rect2D,
+        SharingMode, SurfaceFormatKHR, SwapchainCreateInfoKHR, SwapchainKHR,
+        Viewport,
     },
 };
 
-use super::{device::Device, Surface};
+use super::{device::Device, render_pass::RenderPass, Surface};
 
 pub(super) struct Swapchain {
     swapchain_device: ash::khr::swapchain::Device,
@@ -51,6 +52,7 @@ impl Swapchain {
         surface: &Arc<Surface>,
         graphics_qfi: u32,
         present_qfi: u32,
+        old_swapchain: Option<&Arc<Self>>,
     ) -> VkResult<Self> {
         //SAFETY: surface and device are created from the same instance
         let swap_info = unsafe {
@@ -131,7 +133,11 @@ impl Swapchain {
             .composite_alpha(CompositeAlphaFlagsKHR::OPAQUE)
             .present_mode(present_mode)
             .clipped(true)
-            .old_swapchain(SwapchainKHR::null());
+            .old_swapchain(
+                old_swapchain
+                    .map(|os| os.inner)
+                    .unwrap_or(SwapchainKHR::null()),
+            );
 
         let swapchain_device = ash::khr::swapchain::Device::new(
             device.parent().as_inner_ref(),
@@ -203,6 +209,34 @@ impl Swapchain {
     pub(crate) fn get_format(&self) -> Format {
         self.format.format
     }
+
+    pub fn create_compatible_framebuffers(
+        self: &Arc<Self>,
+        compatible_renderpass: &RenderPass,
+    ) -> VkResult<Vec<SwapchainFramebuffer>> {
+        let mut framebuffers = Vec::with_capacity(self.image_views.len());
+        for iv in self.image_views.iter().copied() {
+            let attachments = &[iv];
+            let framebuffer_ci = FramebufferCreateInfo::default()
+                .render_pass(compatible_renderpass.as_inner())
+                .attachments(attachments)
+                .width(self.extent.width)
+                .height(self.extent.height)
+                .layers(1);
+
+            framebuffers.push(SwapchainFramebuffer {
+                //SAFETY: valid ci
+                inner: unsafe {
+                    self.parent_device
+                        .as_inner_ref()
+                        .create_framebuffer(&framebuffer_ci, None)
+                }?,
+                parent: self.clone(),
+            });
+        }
+
+        Ok(framebuffers)
+    }
 }
 
 impl Drop for Swapchain {
@@ -218,5 +252,23 @@ impl Drop for Swapchain {
             self.image_views.clear();
             self.swapchain_device.destroy_swapchain(self.inner, None);
         }
+    }
+}
+
+#[derive(Debug)]
+pub struct SwapchainFramebuffer {
+    inner: RawFramebuffer,
+    parent: Arc<Swapchain>,
+}
+
+impl Drop for SwapchainFramebuffer {
+    fn drop(&mut self) {
+        //SAFETY: These are made together in Swapchain::create_compatible_framebuffers
+        unsafe {
+            self.parent
+                .parent_device
+                .as_inner_ref()
+                .destroy_framebuffer(self.inner, None)
+        };
     }
 }
