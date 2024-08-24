@@ -5,27 +5,26 @@
 // * We can only destroy vk handles in drop
 // * We hold an Arc to the device that created us
 
-use std::{collections::HashMap, hash::Hash, sync::Arc};
+use std::{collections::HashMap, hash::Hash, marker::PhantomData, sync::Arc};
 
 use ash::{
     prelude::VkResult,
     vk::{
-        DescriptorPool, DescriptorPoolCreateInfo, DescriptorPoolSize,
-        DescriptorSet, DescriptorSetAllocateInfo, DescriptorSetLayout,
-        DescriptorSetLayoutBinding, DescriptorSetLayoutCreateInfo,
-        DescriptorType,
+        DescriptorPoolCreateInfo, DescriptorPoolSize, DescriptorSet,
+        DescriptorSetAllocateInfo, DescriptorSetLayoutBinding,
+        DescriptorSetLayoutCreateInfo, DescriptorType,
     },
 };
 
-use super::Device;
+use super::{Device, PhantomUnsendUnsync};
 
 #[derive(Debug)]
 pub struct DescriptorSetMap<Key>
 where
     Key: Hash + Eq,
 {
-    inner_pool: DescriptorPool,
-    parent: Arc<Device>,
+    _inner_pool: DescriptorPool,
+    _parent: Arc<Device>,
     _sets: HashMap<Key, Vec<DescriptorSet>>,
     layout: DescriptorSetLayout,
 }
@@ -35,24 +34,6 @@ pub struct DescriptorRequest {
     pub count: u32,
     pub binding: u32,
     pub ty: DescriptorType,
-}
-
-impl<T> Drop for DescriptorSetMap<T>
-where
-    T: Hash + Eq,
-{
-    fn drop(&mut self) {
-        //SAFETY: We are in drop so this pool will no longer be used after this.
-        //All child descriptor sets are also gone
-        unsafe {
-            self.parent
-                .as_inner_ref()
-                .destroy_descriptor_set_layout(self.layout, None);
-            self.parent
-                .as_inner_ref()
-                .destroy_descriptor_pool(self.inner_pool, None)
-        };
-    }
 }
 
 impl<Key: Hash + Eq> DescriptorSetMap<Key> {
@@ -73,12 +54,16 @@ impl<Key: Hash + Eq> DescriptorSetMap<Key> {
         }
         let descriptor_set_layout_ci =
             DescriptorSetLayoutCreateInfo::default().bindings(&bindings);
-        //SAFETY: Valid ci
-        let layout = unsafe {
-            device
-                .as_inner_ref()
-                .create_descriptor_set_layout(&descriptor_set_layout_ci, None)
-        }?;
+        let layout = DescriptorSetLayout {
+            //SAFETY: Valid ci
+            inner: unsafe {
+                device.as_inner_ref().create_descriptor_set_layout(
+                    &descriptor_set_layout_ci,
+                    None,
+                )
+            }?,
+            parent: device.clone(),
+        };
         let mut descriptor_pool_sizes =
             Vec::with_capacity(descriptor_requests.len());
 
@@ -95,15 +80,20 @@ impl<Key: Hash + Eq> DescriptorSetMap<Key> {
             .max_sets(max_sets)
             .pool_sizes(&descriptor_pool_sizes);
 
-        let pool =
+        let pool = DescriptorPool {
             //SAFETY: valid CI
-            unsafe { device.as_inner_ref().create_descriptor_pool(&ci, None) }?;
+            inner: unsafe {
+                device.as_inner_ref().create_descriptor_pool(&ci, None)
+            }?,
+            _phantom: PhantomData,
+            parent: device.clone(),
+        };
         let mut sets = HashMap::with_capacity(descriptor_requests.len());
 
         for (k, request) in descriptor_requests {
-            let duped_layouts = vec![layout; request.count as usize];
+            let duped_layouts = vec![layout.inner; request.count as usize];
             let ai = DescriptorSetAllocateInfo::default()
-                .descriptor_pool(pool)
+                .descriptor_pool(pool.inner)
                 .set_layouts(&duped_layouts)
                 .to_owned();
             let bucket =
@@ -113,8 +103,8 @@ impl<Key: Hash + Eq> DescriptorSetMap<Key> {
         }
 
         Ok(Self {
-            inner_pool: pool,
-            parent: device.clone(),
+            _inner_pool: pool,
+            _parent: device.clone(),
             _sets: sets,
             layout,
         })
@@ -133,7 +123,42 @@ impl<Key: Hash + Eq> DescriptorSetMap<Key> {
         self._sets.get(k)
     }
 
-    pub fn layout_handle(&self) -> DescriptorSetLayout {
-        self.layout
+    pub fn layout_handle(&self) -> ash::vk::DescriptorSetLayout {
+        self.layout.inner
+    }
+}
+
+#[derive(Debug)]
+struct DescriptorSetLayout {
+    parent: Arc<Device>,
+    inner: ash::vk::DescriptorSetLayout,
+}
+
+impl Drop for DescriptorSetLayout {
+    fn drop(&mut self) {
+        //SAFETY: inner comes from parent
+        unsafe {
+            self.parent
+                .as_inner_ref()
+                .destroy_descriptor_set_layout(self.inner, None)
+        };
+    }
+}
+
+#[derive(Debug)]
+struct DescriptorPool {
+    inner: ash::vk::DescriptorPool,
+    _phantom: PhantomUnsendUnsync,
+    parent: Arc<Device>,
+}
+
+impl Drop for DescriptorPool {
+    fn drop(&mut self) {
+        //SAFETY: inner comes from parent
+        unsafe {
+            self.parent
+                .as_inner_ref()
+                .destroy_descriptor_pool(self.inner, None)
+        };
     }
 }

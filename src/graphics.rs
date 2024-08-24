@@ -2,6 +2,7 @@ use std::{
     collections::{HashMap, HashSet},
     ffi::CStr,
     fmt::{Debug, Display},
+    marker::PhantomData,
     mem::{offset_of, size_of},
     path::Path,
     sync::Arc,
@@ -137,6 +138,8 @@ pub enum ValidationLevel {
     Info,
     Verbose,
 }
+
+pub type PhantomUnsendUnsync = PhantomData<*const ()>;
 
 #[derive(Debug)]
 struct SurfaceDerived {
@@ -310,6 +313,7 @@ pub enum ContextCreationError {
     #[error("Render setup error: {0}")]
     RenderSetup(#[from] RenderSetupError),
 }
+
 #[derive(thiserror::Error, Debug)]
 pub struct ShaderModuleCreationErrors(Vec<shader_module::Error>);
 
