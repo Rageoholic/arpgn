@@ -1,7 +1,7 @@
 #![warn(unsafe_op_in_unsafe_fn, clippy::undocumented_unsafe_blocks)]
 #![allow(clippy::redundant_closure)]
 
-use graphics::{Context, ShaderLoadingError};
+use graphics::Context;
 use structopt::StructOpt;
 
 use winit::{
@@ -38,38 +38,11 @@ impl ApplicationHandler for App {
                 },
             ) {
                 Ok(gc) => gc,
-                Err(graphics::ContextCreationError::ShaderLoading(errs)) => {
-                    for err in errs {
-                        match err {
-                            ShaderLoadingError::FileLoad(
-                                file_name,
-                                file_error,
-                            ) => {
-                                println!(
-                                    "{} not found: {}",
-                                    file_name.to_string_lossy(),
-                                    file_error
-                                );
-                            }
-                            ShaderLoadingError::ShaderCompilation(
-                                compile_error,
-                            ) => {
-                                print!("{}", compile_error);
-                            }
-                            ShaderLoadingError::MemoryExhaustion => {
-                                print!(
-                                    "Memory exhausted while loading shaders"
-                                );
-                            }
-                        }
-                    }
+                Err(err) => {
+                    eprintln!("{}", err);
                     event_loop.exit();
                     return;
                 }
-                Err(e) => panic!(
-                    "Encountered error creating graphics context {:?}",
-                    e
-                ),
             };
             *self = App::Active(graphics_context);
         }

@@ -10,17 +10,25 @@
 
 // * Do not destroy inner except in drop()
 
-use std::sync::Arc;
+use std::{fmt::Debug, sync::Arc};
 
 use ash::{
     prelude::VkResult,
-    vk::{self, InstanceCreateInfo},
+    vk::{self, Handle, InstanceCreateInfo},
     Entry,
 };
 
 pub(super) struct Instance {
     inner: ash::Instance,
     parent: Arc<Entry>,
+}
+
+impl Debug for Instance {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Instance")
+            .field("instance", &self.inner.handle().as_raw())
+            .finish_non_exhaustive()
+    }
 }
 
 impl Drop for Instance {

@@ -7,7 +7,10 @@
 
 use std::sync::Arc;
 
-use ash::{prelude::VkResult, vk};
+use ash::{
+    prelude::VkResult,
+    vk::{self, Handle},
+};
 use winit::{
     dpi::PhysicalSize,
     raw_window_handle::{HasDisplayHandle, HasWindowHandle},
@@ -29,6 +32,15 @@ impl Drop for Surface {
         //SAFETY: We made this surface with this surface instance. We only make
         //Surface in new which upholds this
         unsafe { self.surface_instance.destroy_surface(self.surface, None) };
+    }
+}
+impl std::fmt::Debug for Surface {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Surface")
+            .field("surface", &self.surface.as_raw())
+            .field("_parent_instance", &self._parent_instance)
+            .field("parent_window", &self.parent_window)
+            .finish_non_exhaustive()
     }
 }
 

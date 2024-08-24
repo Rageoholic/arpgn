@@ -20,6 +20,19 @@ pub(super) struct Swapchain {
     _parent_surface: Arc<Surface>,
     _format: vk::SurfaceFormatKHR,
     image_views: Vec<vk::ImageView>,
+    extent: vk::Extent2D,
+}
+
+impl std::fmt::Debug for Swapchain {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Swapchain")
+            .field("inner", &self.inner)
+            .field("parent_device", &self.parent_device)
+            .field("_parent_surface", &self._parent_surface)
+            .field("_format", &self._format)
+            .field("extent", &self.extent)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Swapchain {
@@ -158,7 +171,24 @@ impl Swapchain {
             _format: format,
             parent_device: device.clone(),
             _parent_surface: surface.clone(),
+            extent: swap_extent,
         })
+    }
+    pub fn default_viewport(&self) -> vk::Viewport {
+        vk::Viewport {
+            x: 0f32,
+            y: 0 as f32,
+            width: self.extent.width as f32,
+            height: self.extent.height as f32,
+            min_depth: 0.0,
+            max_depth: 1.0,
+        }
+    }
+    pub fn default_scissor(&self) -> vk::Rect2D {
+        vk::Rect2D {
+            offset: vk::Offset2D { x: 0, y: 0 },
+            extent: self.extent,
+        }
     }
 }
 

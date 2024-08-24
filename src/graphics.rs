@@ -1,10 +1,18 @@
 use std::{
-    collections::HashSet, ffi::CStr, fmt::Debug, path::Path, str::FromStr,
+    collections::{HashMap, HashSet},
+    ffi::CStr,
+    fmt::{Debug, Display},
+    mem::{offset_of, size_of},
+    path::Path,
     sync::Arc,
 };
 
-use ash::{vk, LoadingError};
+use ash::{
+    vk::{self, DescriptorType, PipelineLayoutCreateInfo},
+    LoadingError,
+};
 use debug_messenger::DebugMessenger;
+use descriptor_set_map::{DescriptorRequest, DescriptorSetMap};
 use device::Device;
 use instance::Instance;
 
@@ -15,6 +23,7 @@ use strum::EnumString;
 
 use surface::Surface;
 use swapchain::Swapchain;
+use vek::{Mat4, Vec3};
 use winit::{
     dpi::{LogicalSize, Size},
     event_loop::ActiveEventLoop,
@@ -27,15 +36,15 @@ const DEFAULT_WINDOW_WIDTH: u32 = 1280;
 const DEFAULT_WINDOW_HEIGHT: u32 = 720;
 
 mod debug_messenger;
+mod descriptor_set_map;
 mod device;
 mod instance;
+mod pipeline_layout;
 mod shader_module;
 mod surface;
 mod swapchain;
 
-const _MAX_FRAMES_IN_FLIGHT: usize = 2;
-
-pub type ShaderLoadingError = shader_module::Error;
+const _MAX_FRAMES_IN_FLIGHT: u32 = 2;
 
 struct ContextNonDebug {
     _entry: Arc<ash::Entry>,
@@ -48,6 +57,48 @@ impl Debug for ContextNonDebug {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("GraphicsContextNonDebug")
             .finish_non_exhaustive()
+    }
+}
+
+#[repr(C)]
+#[derive(Debug, bytemuck::Pod, bytemuck::Zeroable, Clone, Copy)]
+struct _Uniform {
+    model: Mat4<f32>,
+    view: Mat4<f32>,
+    proj: Mat4<f32>,
+}
+
+#[repr(C)]
+#[derive(Debug, bytemuck::Pod, bytemuck::Zeroable, Clone, Copy)]
+struct Vertex {
+    pos: vek::Vec2<f32>,
+    col: Vec3<f32>,
+}
+impl Vertex {
+    fn vertex_attribute_descriptions(
+        binding: u32,
+    ) -> [vk::VertexInputAttributeDescription; 2] {
+        [
+            vk::VertexInputAttributeDescription::default()
+                .location(0)
+                .binding(binding)
+                .format(vk::Format::R32G32_SFLOAT)
+                .offset(offset_of!(Vertex, pos) as u32),
+            vk::VertexInputAttributeDescription::default()
+                .location(0)
+                .binding(binding)
+                .offset(offset_of!(Vertex, col) as u32)
+                .format(vk::Format::R32G32B32_SFLOAT),
+        ]
+    }
+    fn vertex_binding_descriptions(
+        binding: u32,
+        input_rate: vk::VertexInputRate,
+    ) -> [vk::VertexInputBindingDescription; 1] {
+        [vk::VertexInputBindingDescription::default()
+            .binding(binding)
+            .stride(size_of::<Vertex>() as u32)
+            .input_rate(input_rate)]
     }
 }
 
@@ -77,23 +128,56 @@ pub enum ValidationLevel {
 }
 
 #[allow(dead_code)]
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum ContextCreationError {
+    #[error("Could not load Vulkan {0:?}")]
     Loading(LoadingError),
+    #[error("Instance creation failed")]
     InstanceCreation,
-    #[allow(dead_code)]
+    #[error("Missing mandatory extensions {0:?}")]
     _MissingMandatoryExtensions(Vec<String>),
+    #[error("No suitable devices")]
     NoSuitableDevice,
+    #[error("Could not create device")]
     DeviceCreation,
+    #[error("Could not create surface")]
     SurfaceCreation,
+    #[error("Could not create swapchain")]
     SwapchainCreation,
+    #[error("Could not create command buffers")]
     _CommandBufferCreation,
-    #[allow(dead_code)]
-    Unknown(String),
-    #[allow(dead_code)]
-    WindowCreation(winit::error::OsError),
+    #[error("Unknown vulkan error while {0}. Error code {1:?}")]
+    UnknownVulkan(String, vk::Result),
+    #[error("Error creating window: {0:?}")]
+    WindowCreation(#[from] winit::error::OsError),
+    #[error("Could not make shader compiler")]
     ShaderCompilerCreation,
-    ShaderLoading(Vec<shader_module::Error>),
+    #[error("Compilation errors\n{0}")]
+    ShaderLoading(#[from] ShaderModuleCreationErrors),
+}
+#[derive(thiserror::Error, Debug)]
+pub struct ShaderModuleCreationErrors(Vec<shader_module::Error>);
+
+impl Display for ShaderModuleCreationErrors {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for error in &self.0 {
+            let line = match error {
+                shader_module::Error::FileLoad(file_name, err) => {
+                    format!(
+                        "{} not found: Error code: {}",
+                        file_name.to_string_lossy(),
+                        err
+                    )
+                }
+                shader_module::Error::ShaderCompilation(err) => err.to_string(),
+                shader_module::Error::MemoryExhaustion => {
+                    "Memory exhausted".into()
+                }
+            };
+            f.write_str(&line)?;
+        }
+        Ok(())
+    }
 }
 
 const KHRONOS_VALIDATION_LAYER_NAME: &CStr = c"VK_LAYER_KHRONOS_validation";
@@ -127,10 +211,8 @@ impl Context {
         let avail_extensions =
         //SAFETY: Should always be good
             unsafe { entry.enumerate_instance_extension_properties(None) }
-                .map_err(|_| {
-                    ContextCreationError::Unknown(String::from_str(
-                        "Couldn't load instance extensions",
-                    ).unwrap())
+                .map_err(|e| {
+                    ContextCreationError::UnknownVulkan("enumerating instance extensions".to_owned(), e)
                 })?;
         let windowing_required_extensions =
             ash_window::enumerate_required_extensions(
@@ -229,7 +311,7 @@ impl Context {
                 .map_err(|_| ContextCreationError::InstanceCreation)?,
         );
 
-        let debug_messenger = if opts.graphics_validation_layers
+        let _debug_messenger = if opts.graphics_validation_layers
             != ValidationLevel::None
         {
             //SAFETY: Valid ci. We know cause we made it
@@ -346,19 +428,100 @@ impl Context {
             match (vert_shader_mod, frag_shader_mod) {
                 (Ok(mod1), Ok(mod2)) => Ok((mod1, mod2)),
                 (Err(e), Ok(_)) | (Ok(_), Err(e)) => {
-                    Err(ContextCreationError::ShaderLoading(vec![e]))
+                    Err(ContextCreationError::ShaderLoading(
+                        ShaderModuleCreationErrors(vec![e]),
+                    ))
                 }
-                (Err(e1), Err(e2)) => {
-                    Err(ContextCreationError::ShaderLoading(vec![e1, e2]))
-                }
+                (Err(e1), Err(e2)) => Err(ContextCreationError::ShaderLoading(
+                    ShaderModuleCreationErrors(vec![e1, e2]),
+                )),
             }?;
+        let vertex_attribute_descriptions =
+            Vertex::vertex_attribute_descriptions(0);
+        let vertex_binding_descriptions =
+            Vertex::vertex_binding_descriptions(0, vk::VertexInputRate::VERTEX);
+        let _vertex_input_state =
+            vk::PipelineVertexInputStateCreateInfo::default()
+                .vertex_attribute_descriptions(&vertex_attribute_descriptions)
+                .vertex_binding_descriptions(&vertex_binding_descriptions);
+        let _input_assembly_state =
+            vk::PipelineInputAssemblyStateCreateInfo::default()
+                .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
+                .primitive_restart_enable(false);
+        let _input_assembly_state =
+            vk::PipelineInputAssemblyStateCreateInfo::default()
+                .topology(vk::PrimitiveTopology::TRIANGLE_STRIP)
+                .primitive_restart_enable(false);
+
+        let viewports = [swapchain.default_viewport()];
+        let scissors = [swapchain.default_scissor()];
+
+        let _viewport_state = vk::PipelineViewportStateCreateInfo::default()
+            .viewports(&viewports)
+            .scissors(&scissors);
+
+        let _rasterization_state =
+            vk::PipelineRasterizationStateCreateInfo::default()
+                .depth_clamp_enable(false)
+                .rasterizer_discard_enable(false)
+                .polygon_mode(vk::PolygonMode::FILL)
+                .line_width(1.0)
+                .cull_mode(vk::CullModeFlags::BACK)
+                .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
+                .depth_bias_enable(false);
+        let _multisampling_state =
+            vk::PipelineMultisampleStateCreateInfo::default();
+
+        let attachments = [vk::PipelineColorBlendAttachmentState::default()
+            .dst_color_blend_factor(vk::BlendFactor::ONE)
+            .color_write_mask(vk::ColorComponentFlags::RGBA)];
+        let _color_blend_state =
+            vk::PipelineColorBlendStateCreateInfo::default()
+                .attachments(&attachments)
+                .logic_op_enable(false)
+                .logic_op(vk::LogicOp::COPY)
+                .blend_constants([0.0, 0.0, 0.0, 0.0]);
+
+        let mut descriptor_requests = HashMap::with_capacity(1);
+        descriptor_requests.insert(
+            0,
+            DescriptorRequest {
+                ty: DescriptorType::UNIFORM_BUFFER,
+                count: _MAX_FRAMES_IN_FLIGHT,
+                binding: 0,
+            },
+        );
+
+        let descriptor_map =
+            DescriptorSetMap::new(&device, descriptor_requests).map_err(
+                |err| {
+                    ContextCreationError::UnknownVulkan(
+                        "creating descriptor map".into(),
+                        err,
+                    )
+                },
+            )?;
+        let descriptor_set_layouts = [descriptor_map.layout_handle()];
+        let pipeline_layout_ci = PipelineLayoutCreateInfo::default()
+            .set_layouts(&descriptor_set_layouts);
+
+        //SAFETY: Valid ci
+        let _pipeline_layout = unsafe {
+            pipeline_layout::PipelineLayout::new(&device, &pipeline_layout_ci)
+        }
+        .map_err(|err| {
+            ContextCreationError::UnknownVulkan(
+                "creation of pipeline layout".into(),
+                err,
+            )
+        })?;
 
         Ok(Context {
             win,
             _nd: ContextNonDebug {
                 _entry: entry,
                 _instance: instance,
-                _debug_messenger: debug_messenger,
+                _debug_messenger,
                 _swapchain: swapchain,
             },
         })
