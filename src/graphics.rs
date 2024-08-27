@@ -7,6 +7,7 @@ use std::{
     path::Path,
     rc::Rc,
     sync::Arc,
+    time::Instant,
 };
 
 use ash::{
@@ -180,6 +181,7 @@ pub struct Context {
     device: Arc<Device>,
     vert_shader_mod: ShaderModule,
     frag_shader_mod: ShaderModule,
+    start_time: Instant,
 }
 
 #[derive(Debug, Default)]
@@ -232,7 +234,7 @@ impl SurfaceDerived {
             .map_err(|_| SwapchainCreation)?,
         );
         let viewports = [swapchain.default_viewport()];
-        let scissors = [swapchain.default_scissor()];
+        let scissors = [swapchain.as_rect()];
         let color_attachment = AttachmentDescription::default()
             .format(swapchain.get_format())
             .samples(SampleCountFlags::TYPE_1)
@@ -869,6 +871,7 @@ impl Context {
             device,
             vert_shader_mod,
             frag_shader_mod,
+            start_time: Instant::now(),
         })
     }
     pub fn resize(&mut self) {
@@ -917,11 +920,26 @@ impl Context {
                 .unwrap()
                 .0;
                 let fb = &mut sd.swapchain_framebuffers[fb_index as usize];
-                let model = Mat4::identity();
-                let view = Mat4::identity();
-                let proj: Mat4<f32> = Mat4::identity();
+                let model = Mat4::rotation_z(
+                    90f32.to_radians()
+                        * self.start_time.elapsed().as_secs_f32(),
+                );
+                let view = Mat4::look_at(
+                    Vec3::broadcast(2.),
+                    Vec3::broadcast(0.),
+                    Vec3::unit_z(),
+                );
+                let mut proj: Mat4<f32> = Mat4::perspective_lh_zo(
+                    45f32.to_radians(),
+                    sd.swapchain.get_aspect_ratio(),
+                    0.1,
+                    10.0,
+                );
                 //Need to invert the projection matrix in order to flip the y
-                //axis properly without influencing other coords
+                //axis properly without influencing other coords. Also turns it
+                //into a right hand coordinate space which is what I want.
+                //Thanks vulkan.
+                proj[(1, 1)] *= -1.;
 
                 vertex_buffer.upload_data(VERTICES);
                 index_buffer.upload_data(INDICES);
@@ -969,7 +987,7 @@ impl Context {
                                             float32: [0.0, 0.0, 0.0, 1.0],
                                         },
                                     }])
-                                    .render_area(sd.swapchain.default_scissor())
+                                    .render_area(sd.swapchain.as_rect())
                                     .render_pass(sd.render_pass.get_inner())
                                     .framebuffer(fb.get_inner()),
                                 SubpassContents::INLINE,

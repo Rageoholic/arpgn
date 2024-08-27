@@ -199,17 +199,21 @@ impl Swapchain {
             x: 0f32,
             y: 0 as f32,
             width: self.extent.width as f32,
-            height: (self.extent.height as f32),
+            height: self.extent.height as f32,
 
             min_depth: 0.0,
             max_depth: 1.0,
         }
     }
-    pub fn default_scissor(&self) -> Rect2D {
+    pub fn as_rect(&self) -> Rect2D {
         Rect2D {
             offset: Offset2D { x: 0, y: 0 },
             extent: self.extent,
         }
+    }
+
+    pub fn get_aspect_ratio(&self) -> f32 {
+        self.extent.width as f32 / self.extent.height as f32
     }
 
     pub(crate) fn get_format(&self) -> Format {
