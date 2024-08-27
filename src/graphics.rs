@@ -87,20 +87,24 @@ const MAX_FRAMES_IN_FLIGHT: u32 = 2;
 
 const VERTICES: &[Vertex] = &[
     Vertex {
-        pos: Vec2::new(0.0, -0.5),
+        pos: Vec2::new(-0.5, -0.5),
         col: Vec3::new(1.0, 0.0, 0.0),
     },
     Vertex {
-        pos: Vec2::new(0.5, 0.5),
+        pos: Vec2::new(-0.5, 0.5),
         col: Vec3::new(0.0, 0.0, 1.0),
     },
     Vertex {
-        pos: Vec2::new(-0.5, 0.5),
+        pos: Vec2::new(0.5, 0.5),
         col: Vec3::new(0.0, 1.0, 0.0),
+    },
+    Vertex {
+        pos: Vec2::new(0.5, -0.5),
+        col: Vec3::new(1.0, 1.0, 1.0),
     },
 ];
 
-const INDICES: &[u16] = &[0, 1, 2];
+const INDICES: &[u16] = &[0, 1, 2, 0, 2, 3];
 
 #[repr(C)]
 #[derive(Debug, bytemuck::Pod, bytemuck::Zeroable, Clone, Copy)]
@@ -275,19 +279,16 @@ impl SurfaceDerived {
             Vertex::vertex_attribute_descriptions(0);
         let vertex_binding_descriptions =
             Vertex::vertex_binding_descriptions(0, VertexInputRate::VERTEX);
-        let _vertex_input_state = PipelineVertexInputStateCreateInfo::default()
+        let vertex_input_state = PipelineVertexInputStateCreateInfo::default()
             .vertex_attribute_descriptions(&vertex_attribute_descriptions)
             .vertex_binding_descriptions(&vertex_binding_descriptions);
-        let _input_assembly_state =
+
+        let input_assembly_state =
             PipelineInputAssemblyStateCreateInfo::default()
                 .topology(PrimitiveTopology::TRIANGLE_LIST)
                 .primitive_restart_enable(false);
-        let _input_assembly_state =
-            PipelineInputAssemblyStateCreateInfo::default()
-                .topology(PrimitiveTopology::TRIANGLE_STRIP)
-                .primitive_restart_enable(false);
 
-        let _rasterization_state =
+        let rasterization_state =
             PipelineRasterizationStateCreateInfo::default()
                 .depth_clamp_enable(false)
                 .rasterizer_discard_enable(false)
@@ -296,7 +297,7 @@ impl SurfaceDerived {
                 .cull_mode(CullModeFlags::BACK)
                 .front_face(FrontFace::COUNTER_CLOCKWISE)
                 .depth_bias_enable(false);
-        let _multisample_state = PipelineMultisampleStateCreateInfo::default()
+        let multisample_state = PipelineMultisampleStateCreateInfo::default()
             .rasterization_samples(SampleCountFlags::TYPE_1);
 
         let attachments = [PipelineColorBlendAttachmentState::default()
@@ -310,11 +311,11 @@ impl SurfaceDerived {
 
         let pipeline_ci = GraphicsPipelineCreateInfo::default()
             .stages(&shader_stages)
-            .vertex_input_state(&_vertex_input_state)
-            .input_assembly_state(&_input_assembly_state)
+            .vertex_input_state(&vertex_input_state)
+            .input_assembly_state(&input_assembly_state)
             .viewport_state(&viewport_state)
-            .rasterization_state(&_rasterization_state)
-            .multisample_state(&_multisample_state)
+            .rasterization_state(&rasterization_state)
+            .multisample_state(&multisample_state)
             .color_blend_state(&_color_blend_state)
             .layout(pipeline_layout.get_inner())
             .render_pass(render_pass.get_inner())
@@ -898,13 +899,6 @@ impl Context {
                 let proj: Mat4<f32> = Mat4::identity();
                 //Need to invert the projection matrix in order to flip the y
                 //axis properly without influencing other coords
-                let proj = proj
-                    * Mat4::from_row_arrays([
-                        [1.0f32, 0.0, 0.0, 0.0],
-                        [0.0, -1.0, 0.0, 0.0],
-                        [0.0, 0.0, 1.0, 0.0],
-                        [0.0, 0.0, 0.0, 1.0],
-                    ]);
 
                 vertex_buffer.upload_data(VERTICES);
                 index_buffer.upload_data(INDICES);
