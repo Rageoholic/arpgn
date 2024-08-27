@@ -178,6 +178,8 @@ pub struct Context {
     present_queue_index: u32,
     pipeline_layout: PipelineLayout,
     device: Arc<Device>,
+    vert_shader_mod: ShaderModule,
+    frag_shader_mod: ShaderModule,
 }
 
 #[derive(Debug, Default)]
@@ -200,9 +202,10 @@ pub type PhantomUnsendUnsync = PhantomData<*const ()>;
 
 #[derive(Debug)]
 struct SurfaceDerived {
+    surface: Arc<Surface>,
     swapchain: Arc<Swapchain>,
     pipeline: Pipeline,
-    _swapchain_framebuffers: Vec<swapchain::SwapchainFramebuffer>,
+    swapchain_framebuffers: Vec<swapchain::SwapchainFramebuffer>,
     render_pass: RenderPass,
 }
 impl SurfaceDerived {
@@ -336,8 +339,9 @@ impl SurfaceDerived {
         Ok(Self {
             swapchain,
             pipeline,
-            _swapchain_framebuffers: swapchain_framebuffers,
+            swapchain_framebuffers,
             render_pass,
+            surface,
         })
     }
 }
@@ -863,9 +867,28 @@ impl Context {
             prev_frame_finished_fences: fences,
             pipeline_layout,
             device,
+            vert_shader_mod,
+            frag_shader_mod,
         })
     }
-    pub fn resize(&mut self) {}
+    pub fn resize(&mut self) {
+        if let Some(ref mut surface_derived) = self.surface_derived {
+            let surface = surface_derived.surface.clone();
+            //Must wait for the device to be idle before dropping any objects
+            //potentially referred to by frames in flight
+            self.device.wait_idle().unwrap();
+
+            *surface_derived = SurfaceDerived::new(
+                &self.device,
+                surface,
+                self.graphics_queue_index,
+                self.present_queue_index,
+                &[&self.vert_shader_mod, &self.frag_shader_mod],
+                &self.pipeline_layout,
+            )
+            .unwrap();
+        }
+    }
     pub fn draw(&mut self) {
         match &mut self.surface_derived {
             Some(sd) => {
@@ -893,7 +916,7 @@ impl Context {
                 }
                 .unwrap()
                 .0;
-                let fb = &mut sd._swapchain_framebuffers[fb_index as usize];
+                let fb = &mut sd.swapchain_framebuffers[fb_index as usize];
                 let model = Mat4::identity();
                 let view = Mat4::identity();
                 let proj: Mat4<f32> = Mat4::identity();

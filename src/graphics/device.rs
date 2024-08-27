@@ -171,6 +171,11 @@ impl Device {
     pub(super) fn get_allocator_ref(&self) -> &vk_mem::Allocator {
         &self.allocator
     }
+
+    pub fn wait_idle(&self) -> VkResult<()> {
+        //SAFETY: We basically know this is always safe
+        unsafe { self.inner.device_wait_idle() }
+    }
 }
 
 #[derive(thiserror::Error, Debug)]
