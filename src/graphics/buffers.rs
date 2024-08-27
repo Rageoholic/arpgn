@@ -45,12 +45,6 @@ impl<T: Pod + Zeroable> ManagedMappableBuffer<T> {
         let mapping = self.allocation_info.mapped_data;
 
         assert!(self.allocation_info.size as usize >= size_of_val(data));
-        log::warn!(
-            "Writing {} bytes from {:?} to {:?}",
-            size_of_val(data),
-            data.as_ptr(),
-            mapping
-        );
 
         //SAFETY: We just checked that the allocation is big enough for this
         unsafe {
