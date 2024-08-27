@@ -7,6 +7,7 @@ use ash::{
 
 use super::device::Device;
 
+#[derive(Debug)]
 pub struct RenderPass {
     inner: RawRenderPass,
     parent: Arc<Device>,
@@ -39,7 +40,7 @@ impl RenderPass {
         })
     }
 
-    pub(crate) fn as_inner(&self) -> RawRenderPass {
+    pub(crate) fn get_inner(&self) -> RawRenderPass {
         self.inner
     }
 }

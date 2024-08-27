@@ -14,25 +14,29 @@ use ash::{
         api_version_major, api_version_minor, api_version_patch,
         ApplicationInfo, AttachmentDescription, AttachmentLoadOp,
         AttachmentReference, AttachmentStoreOp, BlendFactor, BufferCreateInfo,
-        BufferUsageFlags, ColorComponentFlags, CommandBufferLevel,
+        BufferUsageFlags, ClearColorValue, ClearValue, ColorComponentFlags,
+        CommandBufferBeginInfo, CommandBufferLevel, CommandBufferUsageFlags,
         CommandPoolCreateFlags, CommandPoolCreateInfo, CullModeFlags,
         DebugUtilsMessageSeverityFlagsEXT, DebugUtilsMessageTypeFlagsEXT,
-        DebugUtilsMessengerCreateInfoEXT, DescriptorPoolCreateInfo,
-        DescriptorPoolSize, DescriptorSetAllocateInfo,
-        DescriptorSetLayoutBinding, DescriptorSetLayoutCreateInfo,
-        DescriptorType, DeviceCreateInfo, DeviceQueueCreateInfo, Format,
-        FrontFace, GraphicsPipelineCreateInfo, ImageLayout, InstanceCreateInfo,
-        LogicOp, MemoryPropertyFlags, PhysicalDevice, PhysicalDeviceType,
+        DebugUtilsMessengerCreateInfoEXT, DescriptorBufferInfo,
+        DescriptorPoolCreateInfo, DescriptorPoolSize,
+        DescriptorSetAllocateInfo, DescriptorSetLayoutBinding,
+        DescriptorSetLayoutCreateInfo, DescriptorType, DeviceCreateInfo,
+        DeviceQueueCreateInfo, Format, FrontFace, GraphicsPipelineCreateInfo,
+        ImageLayout, IndexType, InstanceCreateInfo, LogicOp,
+        MemoryPropertyFlags, PhysicalDevice, PhysicalDeviceType,
         PipelineBindPoint, PipelineColorBlendAttachmentState,
         PipelineColorBlendStateCreateInfo,
         PipelineInputAssemblyStateCreateInfo, PipelineLayoutCreateInfo,
         PipelineMultisampleStateCreateInfo,
         PipelineRasterizationStateCreateInfo, PipelineShaderStageCreateInfo,
-        PipelineVertexInputStateCreateInfo, PipelineViewportStateCreateInfo,
-        PolygonMode, PrimitiveTopology, QueueFlags, RenderPassCreateInfo,
+        PipelineStageFlags, PipelineVertexInputStateCreateInfo,
+        PipelineViewportStateCreateInfo, PolygonMode, PrimitiveTopology,
+        QueueFlags, RenderPassBeginInfo, RenderPassCreateInfo,
         Result as VkResult, SampleCountFlags, ShaderStageFlags, SharingMode,
-        SubpassDescription, VertexInputAttributeDescription,
-        VertexInputBindingDescription, VertexInputRate, API_VERSION_1_0,
+        SubpassContents, SubpassDescription, VertexInputAttributeDescription,
+        VertexInputBindingDescription, VertexInputRate, WriteDescriptorSet,
+        API_VERSION_1_0,
     },
     LoadingError,
 };
@@ -52,6 +56,7 @@ use strum::EnumString;
 
 use surface::Surface;
 use swapchain::Swapchain;
+use sync_objects::{Fence, Semaphore};
 use vek::{Mat4, Vec2, Vec3};
 use winit::{
     dpi::{LogicalSize, Size},
@@ -76,6 +81,7 @@ mod render_pass;
 mod shader_module;
 mod surface;
 mod swapchain;
+mod sync_objects;
 
 const MAX_FRAMES_IN_FLIGHT: u32 = 2;
 
@@ -89,7 +95,7 @@ const VERTICES: &[Vertex] = &[
         col: Vec3::new(0.0, 0.0, 1.0),
     },
     Vertex {
-        pos: Vec2::new(-0.5, -0.5),
+        pos: Vec2::new(-0.5, 0.5),
         col: Vec3::new(0.0, 1.0, 0.0),
     },
 ];
@@ -138,6 +144,13 @@ impl Vertex {
     }
 }
 
+impl Drop for Context {
+    fn drop(&mut self) {
+        //SAFETY: Almost always fine
+        unsafe { self.device.as_inner_ref().device_wait_idle() }.unwrap();
+    }
+}
+
 //SAFETY: All members must be manually drop so we can control the Drop order in
 //our Drop implementation. There are ways around this but they require more
 //magic
@@ -146,12 +159,21 @@ pub struct Context {
     win: Arc<Window>,
     _instance: Arc<Instance>,
     _debug_messenger: Option<DebugMessenger>,
-    _surface_derived: Option<SurfaceDerived>,
-    _command_buffers: Vec<command_buffers::CommandBuffer>,
-    _descriptor_sets: Vec<DescriptorSet>,
-    _vertex_buffers: Vec<ManagedMappableBuffer<Vertex>>,
-    _uniform_buffers: Vec<ManagedMappableBuffer<Uniform>>,
-    _index_buffers: Vec<ManagedMappableBuffer<u16>>,
+    surface_derived: Option<SurfaceDerived>,
+    command_buffers: Vec<command_buffers::CommandBuffer>,
+    descriptor_sets: Vec<DescriptorSet>,
+    vertex_buffers: Vec<ManagedMappableBuffer<Vertex>>,
+    //TODO: Apparently this uniform buffer is captured by the descriptor set
+    uniform_buffers: Vec<ManagedMappableBuffer<Uniform>>,
+    index_buffers: Vec<ManagedMappableBuffer<u16>>,
+    image_available_semaphores: Vec<Semaphore>,
+    prev_frame_finished_fences: Vec<Fence>,
+    sync_index: usize,
+    render_complete_semaphores: Vec<Semaphore>,
+    graphics_queue_index: u32,
+    present_queue_index: u32,
+    pipeline_layout: PipelineLayout,
+    device: Arc<Device>,
 }
 
 #[derive(Debug, Default)]
@@ -174,9 +196,10 @@ pub type PhantomUnsendUnsync = PhantomData<*const ()>;
 
 #[derive(Debug)]
 struct SurfaceDerived {
-    _swapchain: Arc<Swapchain>,
-    _pipeline: Pipeline,
+    swapchain: Arc<Swapchain>,
+    pipeline: Pipeline,
     _swapchain_framebuffers: Vec<swapchain::SwapchainFramebuffer>,
+    render_pass: RenderPass,
 }
 impl SurfaceDerived {
     fn new(
@@ -185,7 +208,7 @@ impl SurfaceDerived {
         graphics_queue_index: u32,
         present_queue_index: u32,
         shader_modules: &[&ShaderModule],
-        pipeline_layout: PipelineLayout,
+        pipeline_layout: &PipelineLayout,
     ) -> Result<Self, RenderSetupError> {
         use RenderSetupError::*;
         let swapchain = Arc::new(
@@ -225,7 +248,7 @@ impl SurfaceDerived {
         let subpasses = &[subpass];
         let attachments = [color_attachment];
 
-        let _viewport_state = PipelineViewportStateCreateInfo::default()
+        let viewport_state = PipelineViewportStateCreateInfo::default()
             .viewports(&viewports)
             .scissors(&scissors);
 
@@ -289,12 +312,12 @@ impl SurfaceDerived {
             .stages(&shader_stages)
             .vertex_input_state(&_vertex_input_state)
             .input_assembly_state(&_input_assembly_state)
-            .viewport_state(&_viewport_state)
+            .viewport_state(&viewport_state)
             .rasterization_state(&_rasterization_state)
             .multisample_state(&_multisample_state)
             .color_blend_state(&_color_blend_state)
-            .layout(pipeline_layout.as_inner())
-            .render_pass(render_pass.as_inner())
+            .layout(pipeline_layout.get_inner())
+            .render_pass(render_pass.get_inner())
             .subpass(0);
         let pipeline =
             //SAFETY: valid cis
@@ -310,9 +333,10 @@ impl SurfaceDerived {
                 UnknownVulkan("While creating framebuffers".to_owned(), e)
             })?;
         Ok(Self {
-            _swapchain: swapchain,
-            _pipeline: pipeline,
+            swapchain,
+            pipeline,
             _swapchain_framebuffers: swapchain_framebuffers,
+            render_pass,
         })
     }
 }
@@ -432,6 +456,10 @@ impl Context {
                 //computer
                 .map(|bytes| unsafe { CStr::from_ptr(*bytes) }),
         );
+
+        if vk_version < ash::vk::API_VERSION_1_1 {
+            mandatory_extensions.push(ash::khr::maintenance1::NAME)
+        }
 
         let mut missing_mandatory_extensions =
             Vec::with_capacity(mandatory_extensions.len());
@@ -659,10 +687,11 @@ impl Context {
             .set_layouts(&duped_layouts);
 
         //SAFETY: valid ai
-        let descriptor_sets = unsafe {
+        let mut descriptor_sets = unsafe {
             DescriptorSet::alloc(&descriptor_pool, &descriptor_set_ai)
         }
         .unwrap();
+
         let pipeline_layout_ci = PipelineLayoutCreateInfo::default()
             .set_layouts(descriptor_set_layouts);
 
@@ -692,11 +721,16 @@ impl Context {
             .map_err(|_| CommandBufferCreation)?;
 
         let mut vertex_buffers =
-            Vec::with_capacity(MAX_FRAMES_IN_FLIGHT.try_into().unwrap());
+            Vec::with_capacity(MAX_FRAMES_IN_FLIGHT as usize);
         let mut index_buffers =
-            Vec::with_capacity(MAX_FRAMES_IN_FLIGHT.try_into().unwrap());
+            Vec::with_capacity(MAX_FRAMES_IN_FLIGHT as usize);
         let mut uniform_buffers =
-            Vec::with_capacity(MAX_FRAMES_IN_FLIGHT.try_into().unwrap());
+            Vec::with_capacity(MAX_FRAMES_IN_FLIGHT as usize);
+        let mut image_available_semaphores =
+            Vec::with_capacity(MAX_FRAMES_IN_FLIGHT as usize);
+        let mut render_complete_semaphores =
+            Vec::with_capacity(MAX_FRAMES_IN_FLIGHT as usize);
+        let mut fences = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT as usize);
         let buffer_qfis = &[scored_phys_dev.graphics_queue_index];
 
         let vertex_buffer_ci = BufferCreateInfo::default()
@@ -709,8 +743,9 @@ impl Context {
             flags: vk_mem::AllocationCreateFlags::MAPPED
                 | vk_mem::AllocationCreateFlags::HOST_ACCESS_SEQUENTIAL_WRITE,
             usage: vk_mem::MemoryUsage::AutoPreferDevice,
-            required_flags: MemoryPropertyFlags::HOST_VISIBLE,
-            preferred_flags: MemoryPropertyFlags::HOST_COHERENT,
+            required_flags: MemoryPropertyFlags::HOST_VISIBLE
+                | MemoryPropertyFlags::HOST_COHERENT,
+
             ..Default::default()
         };
         let index_buffer_ci = BufferCreateInfo::default()
@@ -723,8 +758,8 @@ impl Context {
             flags: vk_mem::AllocationCreateFlags::MAPPED
                 | vk_mem::AllocationCreateFlags::HOST_ACCESS_SEQUENTIAL_WRITE,
             usage: vk_mem::MemoryUsage::AutoPreferDevice,
-            required_flags: MemoryPropertyFlags::HOST_VISIBLE,
-            preferred_flags: MemoryPropertyFlags::HOST_COHERENT,
+            required_flags: MemoryPropertyFlags::HOST_VISIBLE
+                | MemoryPropertyFlags::HOST_COHERENT,
             ..Default::default()
         };
         let uniform_buffer_ci = BufferCreateInfo::default()
@@ -737,8 +772,8 @@ impl Context {
             flags: vk_mem::AllocationCreateFlags::MAPPED
                 | vk_mem::AllocationCreateFlags::HOST_ACCESS_SEQUENTIAL_WRITE,
             usage: vk_mem::MemoryUsage::AutoPreferHost,
-            required_flags: MemoryPropertyFlags::HOST_VISIBLE,
-            preferred_flags: MemoryPropertyFlags::HOST_COHERENT,
+            required_flags: MemoryPropertyFlags::HOST_VISIBLE
+                | MemoryPropertyFlags::HOST_COHERENT,
             ..Default::default()
         };
 
@@ -776,28 +811,181 @@ impl Context {
                 }
                 .unwrap(),
             );
+            image_available_semaphores.push(Semaphore::new(&device).unwrap());
+            render_complete_semaphores.push(Semaphore::new(&device).unwrap());
+            fences.push(Fence::new(&device).unwrap());
         }
+
+        for (i, descriptor_set) in descriptor_sets.iter_mut().enumerate() {
+            let buffer_infos = &[DescriptorBufferInfo::default()
+                .buffer(uniform_buffers[i].get_inner())
+                .offset(0)
+                .range(size_of::<Uniform>() as u64)];
+
+            let descriptor_set_configs = &[WriteDescriptorSet::default()
+                .dst_set(descriptor_set.get_inner())
+                .dst_binding(0)
+                .dst_array_element(0)
+                .descriptor_type(DescriptorType::UNIFORM_BUFFER)
+                .buffer_info(buffer_infos)];
+
+            //SAFETY: Valid config
+            unsafe {
+                device
+                    .as_inner_ref()
+                    .update_descriptor_sets(descriptor_set_configs, &[])
+            };
+        }
+
         Ok(Context {
+            sync_index: 0,
             win,
-            _command_buffers: command_buffers,
-            _descriptor_sets: descriptor_sets,
+            command_buffers,
+            descriptor_sets,
             _instance: instance,
             _debug_messenger,
-            _surface_derived: Some(SurfaceDerived::new(
+            surface_derived: Some(SurfaceDerived::new(
                 &device,
                 Arc::new(surface),
                 scored_phys_dev.graphics_queue_index,
                 scored_phys_dev.present_queue_index,
                 &[&vert_shader_mod, &frag_shader_mod],
-                pipeline_layout,
+                &pipeline_layout,
             )?),
-            _vertex_buffers: vertex_buffers,
-            _uniform_buffers: uniform_buffers,
-            _index_buffers: index_buffers,
+            graphics_queue_index: scored_phys_dev.graphics_queue_index,
+            present_queue_index: scored_phys_dev.present_queue_index,
+            vertex_buffers,
+            uniform_buffers,
+            index_buffers,
+            image_available_semaphores,
+            render_complete_semaphores,
+            prev_frame_finished_fences: fences,
+            pipeline_layout,
+            device,
         })
     }
     pub fn resize(&mut self) {}
-    pub fn draw(&mut self) {}
+    pub fn draw(&mut self) {
+        match &mut self.surface_derived {
+            Some(sd) => {
+                let sync_index = self.sync_index;
+                self.sync_index =
+                    (self.sync_index + 1) % MAX_FRAMES_IN_FLIGHT as usize;
+                let guard_fence =
+                    &mut self.prev_frame_finished_fences[sync_index];
+                guard_fence.wait_and_reset().unwrap();
+                let image_available_semaphore =
+                    &mut self.image_available_semaphores[sync_index];
+                let render_complete_semaphore =
+                    &mut self.render_complete_semaphores[sync_index];
+                let vertex_buffer = &mut self.vertex_buffers[sync_index];
+                let index_buffer = &mut self.index_buffers[sync_index];
+                let uniform_buffer = &mut self.uniform_buffers[sync_index];
+                let descriptor_set = &mut self.descriptor_sets[sync_index];
+                let cb = &mut self.command_buffers[sync_index];
+                //SAFETY: Semaphore derives from same device as swapchain
+                let fb_index = unsafe {
+                    sd.swapchain.acquire_next_image(
+                        Some(image_available_semaphore),
+                        None,
+                    )
+                }
+                .unwrap()
+                .0;
+                let fb = &mut sd._swapchain_framebuffers[fb_index as usize];
+                let model = Mat4::identity();
+                let view = Mat4::identity();
+                let proj: Mat4<f32> = Mat4::identity();
+                //Need to invert the projection matrix in order to flip the y
+                //axis properly without influencing other coords
+                let proj = proj
+                    * Mat4::from_row_arrays([
+                        [1.0f32, 0.0, 0.0, 0.0],
+                        [0.0, -1.0, 0.0, 0.0],
+                        [0.0, 0.0, 1.0, 0.0],
+                        [0.0, 0.0, 0.0, 1.0],
+                    ]);
+
+                vertex_buffer.upload_data(VERTICES);
+                index_buffer.upload_data(INDICES);
+                uniform_buffer.upload_data(&[Uniform { model, view, proj }]);
+
+                cb.record_and_submit(
+                    self.graphics_queue_index,
+                    0,
+                    &[image_available_semaphore.get_inner()],
+                    &[PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT],
+                    &[render_complete_semaphore.get_inner()],
+                    &CommandBufferBeginInfo::default()
+                        .flags(CommandBufferUsageFlags::ONE_TIME_SUBMIT),
+                    guard_fence.get_inner(),
+                    |dev, cb| -> Result<(), ash::vk::Result> {
+                        //SAFETY: We know dev and cb are linked. All other vars
+                        //used are derived from device
+                        unsafe {
+                            dev.cmd_bind_descriptor_sets(
+                                cb,
+                                PipelineBindPoint::GRAPHICS,
+                                self.pipeline_layout.get_inner(),
+                                0,
+                                &[descriptor_set.get_inner()],
+                                &[],
+                            );
+                            dev.cmd_bind_index_buffer(
+                                cb,
+                                index_buffer.get_inner(),
+                                0,
+                                IndexType::UINT16,
+                            );
+                            dev.cmd_bind_vertex_buffers(
+                                cb,
+                                0,
+                                &[vertex_buffer.get_inner()],
+                                &[0],
+                            );
+
+                            dev.cmd_begin_render_pass(
+                                cb,
+                                &RenderPassBeginInfo::default()
+                                    .clear_values(&[ClearValue {
+                                        color: ClearColorValue {
+                                            float32: [0.0, 0.0, 0.0, 1.0],
+                                        },
+                                    }])
+                                    .render_area(sd.swapchain.default_scissor())
+                                    .render_pass(sd.render_pass.get_inner())
+                                    .framebuffer(fb.get_inner()),
+                                SubpassContents::INLINE,
+                            );
+                            dev.cmd_bind_pipeline(
+                                cb,
+                                PipelineBindPoint::GRAPHICS,
+                                sd.pipeline.get_inner(),
+                            );
+                            dev.cmd_draw_indexed(
+                                cb,
+                                INDICES.len() as u32,
+                                1,
+                                0,
+                                0,
+                                0,
+                            );
+                            dev.cmd_end_render_pass(cb);
+                            Ok(())
+                        }
+                    },
+                )
+                .unwrap();
+
+                fb.present(
+                    self.present_queue_index,
+                    &[render_complete_semaphore.get_inner()],
+                )
+                .unwrap();
+            }
+            None => {}
+        }
+    }
 
     pub fn win_id(&self) -> WindowId {
         self.win.id()

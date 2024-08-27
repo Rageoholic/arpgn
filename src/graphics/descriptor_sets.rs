@@ -74,7 +74,7 @@ impl Drop for DescriptorPool {
 #[derive(Debug)]
 pub struct DescriptorSet {
     _parent: Rc<DescriptorPool>,
-    _inner: ash::vk::DescriptorSet,
+    inner: ash::vk::DescriptorSet,
 }
 
 impl DescriptorPool {
@@ -108,11 +108,15 @@ impl DescriptorSet {
                 raw_handles
                     .into_iter()
                     .map(|inner| Self {
-                        _inner: inner,
+                        inner,
                         _parent: pool.clone(),
                     })
                     .collect()
             },
         )
+    }
+
+    pub(crate) fn get_inner(&self) -> ash::vk::DescriptorSet {
+        self.inner
     }
 }

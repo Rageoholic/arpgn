@@ -56,4 +56,8 @@ impl Pipeline {
             })
             .collect())
     }
+
+    pub(crate) fn get_inner(&self) -> RawPipeline {
+        self.inner
+    }
 }

@@ -13,13 +13,18 @@ use ash::{
         ColorSpaceKHR, ComponentMapping, CompositeAlphaFlagsKHR, Extent2D,
         Format, Framebuffer as RawFramebuffer, FramebufferCreateInfo,
         ImageAspectFlags, ImageSubresourceRange, ImageUsageFlags, ImageView,
-        ImageViewCreateInfo, ImageViewType, Offset2D, PresentModeKHR, Rect2D,
-        SharingMode, SurfaceFormatKHR, SwapchainCreateInfoKHR, SwapchainKHR,
-        Viewport,
+        ImageViewCreateInfo, ImageViewType, Offset2D, PresentInfoKHR,
+        PresentModeKHR, Rect2D, SharingMode, SurfaceFormatKHR,
+        SwapchainCreateInfoKHR, SwapchainKHR, Viewport,
     },
 };
 
-use super::{device::Device, render_pass::RenderPass, Surface};
+use super::{
+    device::Device,
+    render_pass::RenderPass,
+    sync_objects::{self, Semaphore},
+    Surface,
+};
 
 pub(super) struct Swapchain {
     swapchain_device: ash::khr::swapchain::Device,
@@ -194,7 +199,8 @@ impl Swapchain {
             x: 0f32,
             y: 0 as f32,
             width: self.extent.width as f32,
-            height: self.extent.height as f32,
+            height: (self.extent.height as f32),
+
             min_depth: 0.0,
             max_depth: 1.0,
         }
@@ -215,10 +221,10 @@ impl Swapchain {
         compatible_renderpass: &RenderPass,
     ) -> VkResult<Vec<SwapchainFramebuffer>> {
         let mut framebuffers = Vec::with_capacity(self.image_views.len());
-        for iv in self.image_views.iter().copied() {
+        for (i, iv) in self.image_views.iter().copied().enumerate() {
             let attachments = &[iv];
             let framebuffer_ci = FramebufferCreateInfo::default()
-                .render_pass(compatible_renderpass.as_inner())
+                .render_pass(compatible_renderpass.get_inner())
                 .attachments(attachments)
                 .width(self.extent.width)
                 .height(self.extent.height)
@@ -232,10 +238,31 @@ impl Swapchain {
                         .create_framebuffer(&framebuffer_ci, None)
                 }?,
                 parent: self.clone(),
+                index: i,
             });
         }
 
         Ok(framebuffers)
+    }
+
+    pub unsafe fn acquire_next_image(
+        &self,
+        semaphore: Option<&mut Semaphore>,
+        fence: Option<sync_objects::Fence>,
+    ) -> VkResult<(u32, bool)> {
+        //SAFETY: Semaphore and fence derived from same device
+        unsafe {
+            self.swapchain_device.acquire_next_image(
+                self.inner,
+                u64::MAX,
+                semaphore
+                    .map(|s| s.get_inner())
+                    .unwrap_or(ash::vk::Semaphore::null()),
+                fence
+                    .map(|f| f.get_inner())
+                    .unwrap_or(ash::vk::Fence::null()),
+            )
+        }
     }
 }
 
@@ -259,6 +286,33 @@ impl Drop for Swapchain {
 pub struct SwapchainFramebuffer {
     inner: RawFramebuffer,
     parent: Arc<Swapchain>,
+    index: usize,
+}
+impl SwapchainFramebuffer {
+    pub(crate) fn get_inner(&self) -> RawFramebuffer {
+        self.inner
+    }
+
+    pub(crate) fn present(
+        &self,
+        present_queue_family_index: u32,
+        wait_semaphores: &[ash::vk::Semaphore],
+    ) -> VkResult<bool> {
+        //SAFETY: All good
+        unsafe {
+            self.parent.swapchain_device.queue_present(
+                *self
+                    .parent
+                    .parent_device
+                    .get_queue(present_queue_family_index, 0)
+                    .unwrap(),
+                &PresentInfoKHR::default()
+                    .image_indices(&[self.index as u32])
+                    .swapchains(&[self.parent.inner])
+                    .wait_semaphores(wait_semaphores),
+            )
+        }
+    }
 }
 
 impl Drop for SwapchainFramebuffer {

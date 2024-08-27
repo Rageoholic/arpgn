@@ -1,4 +1,4 @@
-use std::{marker::PhantomData, sync::Arc};
+use std::{marker::PhantomData, ptr::copy_nonoverlapping, sync::Arc};
 
 use ash::{prelude::VkResult, vk::BufferCreateInfo};
 use bytemuck::{Pod, Zeroable};
@@ -12,6 +12,7 @@ pub struct ManagedMappableBuffer<T> {
     _phantom: PhantomData<[T]>,
     inner: ash::vk::Buffer,
     allocation: vk_mem::Allocation,
+    allocation_info: vk_mem::AllocationInfo,
 }
 
 impl<T: Pod + Zeroable> ManagedMappableBuffer<T> {
@@ -28,9 +29,33 @@ impl<T: Pod + Zeroable> ManagedMappableBuffer<T> {
         Ok(Self {
             parent: device.clone(),
             inner,
+            allocation_info: device
+                .get_allocator_ref()
+                .get_allocation_info(&allocation),
             allocation,
             _phantom: PhantomData,
         })
+    }
+
+    pub(crate) fn get_inner(&self) -> ash::vk::Buffer {
+        self.inner
+    }
+
+    pub(crate) fn upload_data(&self, data: &[T]) {
+        let mapping = self.allocation_info.mapped_data;
+
+        assert!(self.allocation_info.size as usize >= size_of_val(data));
+        log::warn!(
+            "Writing {} bytes from {:?} to {:?}",
+            size_of_val(data),
+            data.as_ptr(),
+            mapping
+        );
+
+        //SAFETY: We just checked that the allocation is big enough for this
+        unsafe {
+            copy_nonoverlapping(data.as_ptr(), mapping as *mut T, data.len())
+        };
     }
 }
 
