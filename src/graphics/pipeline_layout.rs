@@ -43,7 +43,7 @@ impl PipelineLayout {
         })
     }
 
-    pub(crate) fn as_inner(&self) -> RawPipelineLayout {
+    pub(crate) fn get_inner(&self) -> RawPipelineLayout {
         self.inner
     }
 }

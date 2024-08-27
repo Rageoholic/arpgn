@@ -15,7 +15,7 @@ use std::{
     collections::HashMap,
     fmt::Debug,
     mem::ManuallyDrop,
-    sync::{Arc, RwLock},
+    sync::{Arc, Mutex, MutexGuard},
 };
 
 use ash::{
@@ -32,7 +32,7 @@ pub struct Device {
     inner: ash::Device,
     phys_dev: PhysicalDevice,
     parent: Arc<super::Instance>,
-    _queue_families: HashMap<u32, Vec<RwLock<Queue>>>,
+    queue_families: HashMap<u32, Vec<Mutex<Queue>>>,
     allocator: ManuallyDrop<vk_mem::Allocator>,
 }
 
@@ -42,7 +42,7 @@ impl Debug for Device {
             .field("inner", &self.inner.handle().as_raw())
             .field("phys_dev", &self.phys_dev)
             .field("parent", &self.parent)
-            .field("_queue_families", &self._queue_families)
+            .field("_queue_families", &self.queue_families)
             .finish()
     }
 }
@@ -55,6 +55,11 @@ impl Drop for Device {
         //(other objects are responsible for that)
         unsafe { self.inner.destroy_device(None) };
     }
+}
+
+#[derive(Debug)]
+pub enum QueueRetrievalError {
+    NoSuchQueue,
 }
 
 impl Device {
@@ -85,7 +90,7 @@ impl Device {
             let mut queue_family_queues =
                 Vec::with_capacity(family_queue_count as usize);
             for i in 0..family_queue_count {
-                queue_family_queues.push(RwLock::new(
+                queue_family_queues.push(Mutex::new(
                     //SAFETY: We know these queues exist cause we're
                     //pulling from the queue family info
                     unsafe { inner.get_device_queue(family, i) },
@@ -107,27 +112,41 @@ impl Device {
             inner,
             phys_dev,
             parent: instance.clone(),
-            _queue_families: queue_families,
+            queue_families,
             allocator,
         })
     }
 
+    pub unsafe fn get_queue(
+        &self,
+        family_index: u32,
+        queue_index: u32,
+    ) -> Result<MutexGuard<Queue>, QueueRetrievalError> {
+        self.queue_families
+            .get(&family_index)
+            .and_then(|queues| queues.get(queue_index as usize))
+            .map(|locked_queue| {
+                locked_queue.lock().unwrap_or_else(|p| p.into_inner())
+            })
+            .ok_or(QueueRetrievalError::NoSuchQueue)
+    }
+
     //SAFETY Requirements: 1) Valid submits, 2) fence comes from this device
-    unsafe fn _submit_command_buffers(
+    pub unsafe fn submit_command_buffers(
         &self,
 
         family: u32,
         queue_index: u32,
         submits: &[SubmitInfo],
         fence: Fence,
-    ) -> _QueueSubmitResult {
+    ) -> QueueSubmitResult {
         let lock = self
-            ._queue_families
+            .queue_families
             .get(&family)
-            .ok_or(_QueueSubmitError::NoSuchQueue)?
+            .ok_or(QueueSubmitError::NoSuchQueue)?
             .get(queue_index as usize)
-            .ok_or(_QueueSubmitError::NoSuchQueue)?
-            .write()
+            .ok_or(QueueSubmitError::NoSuchQueue)?
+            .lock()
             //We can just ignore poisoning. We hold this for so little time that it's irrelevant
             .unwrap_or_else(|p| p.into_inner());
         //SAFETY: 1) valid submits, 2) fence comes from this device, 3) Only one
@@ -135,7 +154,7 @@ impl Device {
         // preconditions and we ensure 3 by ensuring that this is the only place
         // where you can submit to a queue.
         unsafe { self.inner.queue_submit(*lock, submits, fence) }
-            .map_err(_QueueSubmitError::Vulkan)
+            .map_err(QueueSubmitError::Vulkan)
     }
     pub(super) fn get_physical_device_handle(&self) -> PhysicalDevice {
         self.phys_dev
@@ -153,9 +172,13 @@ impl Device {
         &self.allocator
     }
 }
-pub enum _QueueSubmitError {
+
+#[derive(thiserror::Error, Debug)]
+pub enum QueueSubmitError {
+    #[error("Raw vk error {0:?}")]
     Vulkan(RawVkResult),
+    #[error("Requested submission to invalid queue")]
     NoSuchQueue,
 }
 
-pub type _QueueSubmitResult = Result<(), _QueueSubmitError>;
+pub type QueueSubmitResult = Result<(), QueueSubmitError>;

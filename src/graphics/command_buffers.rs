@@ -3,16 +3,71 @@ use std::{marker::PhantomData, rc::Rc, sync::Arc};
 use ash::{
     prelude::VkResult,
     vk::{
-        CommandBufferAllocateInfo, CommandBufferLevel, CommandPoolCreateInfo,
+        CommandBufferAllocateInfo, CommandBufferBeginInfo, CommandBufferLevel,
+        CommandPoolCreateInfo, PipelineStageFlags, SubmitInfo,
     },
 };
 
-use super::Device;
+use super::{device::QueueSubmitError, Device};
 
 #[derive(Debug)]
 pub struct CommandBuffer {
-    _inner: ash::vk::CommandBuffer,
-    _parent: Rc<CommandPool>,
+    inner: ash::vk::CommandBuffer,
+    parent: Rc<CommandPool>,
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum RecordAndSubmitError<T> {
+    #[error("Error beginning/ending recording")]
+    InternalRecording(ash::vk::Result),
+    #[error("Error recording command buffer {0:?}")]
+    UserRecording(#[from] T),
+    #[error("Error submitting queue {0}")]
+    QueueSubmitError(QueueSubmitError),
+}
+
+impl CommandBuffer {
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_and_submit<T>(
+        &mut self,
+        queue_family: u32,
+        queue_index: u32,
+        wait_semaphores: &[ash::vk::Semaphore],
+        wait_dst_stage_masks: &[PipelineStageFlags],
+        signal_semaphores: &[ash::vk::Semaphore],
+        begin_info: &CommandBufferBeginInfo,
+        signal_fence: ash::vk::Fence,
+        f: impl FnOnce(&ash::Device, ash::vk::CommandBuffer) -> Result<(), T>,
+    ) -> Result<(), RecordAndSubmitError<T>> {
+        let cb = self.inner;
+
+        let device = self.parent.parent.as_inner_ref();
+        //SAFETY: We know device and cb are related
+        unsafe {
+            device
+                .begin_command_buffer(cb, begin_info)
+                .map_err(|e| RecordAndSubmitError::InternalRecording(e))?;
+            f(device, cb)?;
+            device
+                .end_command_buffer(cb)
+                .map_err(|e| RecordAndSubmitError::InternalRecording(e))?;
+            let cbs = &[cb];
+            self.parent
+                .parent
+                .submit_command_buffers(
+                    queue_family,
+                    queue_index,
+                    &[SubmitInfo::default()
+                        .command_buffers(cbs)
+                        .wait_semaphores(wait_semaphores)
+                        .signal_semaphores(signal_semaphores)
+                        .wait_dst_stage_mask(wait_dst_stage_masks)],
+                    signal_fence,
+                )
+                .map_err(|e| RecordAndSubmitError::QueueSubmitError(e))?;
+        }
+        Ok(())
+    }
 }
 
 type PhantomUnsendUnsync = PhantomData<*mut ()>;
@@ -70,8 +125,8 @@ impl CommandPool {
         }?;
         for raw_cb in raw_cbs {
             cbs.push(CommandBuffer {
-                _inner: raw_cb,
-                _parent: self.clone(),
+                inner: raw_cb,
+                parent: self.clone(),
             })
         }
 
