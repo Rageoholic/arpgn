@@ -89,19 +89,19 @@ const MAX_FRAMES_IN_FLIGHT: u32 = 2;
 const VERTICES: &[Vertex] = &[
     Vertex {
         pos: Vec2::new(-0.5, -0.5),
-        col: Vec3::new(1.0, 0.0, 0.0),
-    },
-    Vertex {
-        pos: Vec2::new(-0.5, 0.5),
         col: Vec3::new(0.0, 0.0, 1.0),
     },
     Vertex {
+        pos: Vec2::new(-0.5, 0.5),
+        col: Vec3::new(0.0, 1.0, 1.0),
+    },
+    Vertex {
         pos: Vec2::new(0.5, 0.5),
-        col: Vec3::new(0.0, 1.0, 0.0),
+        col: Vec3::new(1.0, 1.0, 1.0),
     },
     Vertex {
         pos: Vec2::new(0.5, -0.5),
-        col: Vec3::new(1.0, 1.0, 1.0),
+        col: Vec3::new(1.0, 0.0, 1.0),
     },
 ];
 
@@ -218,6 +218,7 @@ impl SurfaceDerived {
         present_queue_index: u32,
         shader_modules: &[&ShaderModule],
         pipeline_layout: &PipelineLayout,
+        old_swapchain: Option<&Arc<Swapchain>>,
     ) -> Result<Self, RenderSetupError> {
         use RenderSetupError::*;
         let swapchain = Arc::new(
@@ -228,7 +229,7 @@ impl SurfaceDerived {
                     &surface,
                     present_queue_index,
                     graphics_queue_index,
-                    None,
+                    old_swapchain,
                 )
             }
             .map_err(|_| SwapchainCreation)?,
@@ -300,7 +301,7 @@ impl SurfaceDerived {
                 .polygon_mode(PolygonMode::FILL)
                 .line_width(1.0)
                 .cull_mode(CullModeFlags::BACK)
-                .front_face(FrontFace::COUNTER_CLOCKWISE)
+                .front_face(FrontFace::CLOCKWISE)
                 .depth_bias_enable(false);
         let multisample_state = PipelineMultisampleStateCreateInfo::default()
             .rasterization_samples(SampleCountFlags::TYPE_1);
@@ -308,7 +309,7 @@ impl SurfaceDerived {
         let attachments = [PipelineColorBlendAttachmentState::default()
             .dst_color_blend_factor(BlendFactor::ONE)
             .color_write_mask(ColorComponentFlags::RGBA)];
-        let _color_blend_state = PipelineColorBlendStateCreateInfo::default()
+        let color_blend_state = PipelineColorBlendStateCreateInfo::default()
             .attachments(&attachments)
             .logic_op_enable(false)
             .logic_op(LogicOp::COPY)
@@ -321,7 +322,7 @@ impl SurfaceDerived {
             .viewport_state(&viewport_state)
             .rasterization_state(&rasterization_state)
             .multisample_state(&multisample_state)
-            .color_blend_state(&_color_blend_state)
+            .color_blend_state(&color_blend_state)
             .layout(pipeline_layout.get_inner())
             .render_pass(render_pass.get_inner())
             .subpass(0);
@@ -858,6 +859,7 @@ impl Context {
                 scored_phys_dev.present_queue_index,
                 &[&vert_shader_mod, &frag_shader_mod],
                 &pipeline_layout,
+                None,
             )?),
             graphics_queue_index: scored_phys_dev.graphics_queue_index,
             present_queue_index: scored_phys_dev.present_queue_index,
@@ -888,6 +890,7 @@ impl Context {
                 self.present_queue_index,
                 &[&self.vert_shader_mod, &self.frag_shader_mod],
                 &self.pipeline_layout,
+                Some(&surface_derived.swapchain),
             )
             .unwrap();
         }
@@ -922,14 +925,15 @@ impl Context {
                 let fb = &mut sd.swapchain_framebuffers[fb_index as usize];
                 let model = Mat4::rotation_z(
                     90f32.to_radians()
-                        * self.start_time.elapsed().as_secs_f32(),
+                        * self.start_time.elapsed().as_secs_f32()
+                        * 0.0,
                 );
-                let view = Mat4::look_at(
-                    Vec3::broadcast(2.),
+                let view: Mat4<f32> = Mat4::look_at_rh(
+                    Vec3::new(0., -1., 2.),
                     Vec3::broadcast(0.),
                     Vec3::unit_z(),
                 );
-                let mut proj: Mat4<f32> = Mat4::perspective_lh_zo(
+                let mut proj: Mat4<f32> = Mat4::perspective_rh_zo(
                     45f32.to_radians(),
                     sd.swapchain.get_aspect_ratio(),
                     0.1,
@@ -939,7 +943,7 @@ impl Context {
                 //axis properly without influencing other coords. Also turns it
                 //into a right hand coordinate space which is what I want.
                 //Thanks vulkan.
-                proj[(1, 1)] *= -1.;
+                proj[(1, 1)] *= -1f32;
 
                 vertex_buffer.upload_data(VERTICES);
                 index_buffer.upload_data(INDICES);
