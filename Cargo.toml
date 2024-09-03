@@ -6,18 +6,19 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-ash = "0.38.0"
-ash-window = "0.13.0"
-bytemuck = { version = "1.17.0", features = ["derive"] }
-log = { version = "0.4.22", features = ["kv"] }
-pretty_env_logger = "0.5.0"
-shaderc = { version = "0.8.3", features = ["prefer-static-linking"] }
-structopt = "0.3.26"
-strum = { version = "0.26.3", features = ["strum_macros", "derive"] }
-thiserror = "1.0.63"
-vek = { version = "0.17.0", features = ["bytemuck"] }
-vk-mem = "0.4.0"
-winit = "0.30.5"
+ash = "0.38"
+ash-window = "0.13"
+bytemuck = { version = "1.17", features = ["derive"] }
+image = "0.25.2"
+log = { version = "0.4", features = ["kv"] }
+pretty_env_logger = "0.5"
+shaderc = { version = "0.8", features = ["prefer-static-linking"] }
+structopt = "0.3"
+strum = { version = "0.26", features = ["strum_macros", "derive"] }
+thiserror = "1.0"
+vek = { version = "0.17", features = ["bytemuck"] }
+vk-mem = "0.4"
+winit = "0.30"
 
 
 [profile.dev.package."*"]

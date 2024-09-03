@@ -4,6 +4,7 @@ use std::{
     fmt::{Debug, Display},
     marker::PhantomData,
     mem::{offset_of, size_of, size_of_val},
+    ops::Deref,
     path::Path,
     rc::Rc,
     sync::Arc,
@@ -11,33 +12,39 @@ use std::{
 };
 
 use ash::{
+    prelude::VkResult,
     vk::{
-        api_version_major, api_version_minor, api_version_patch,
+        api_version_major, api_version_minor, api_version_patch, AccessFlags,
         ApplicationInfo, AttachmentDescription, AttachmentLoadOp,
-        AttachmentReference, AttachmentStoreOp, BlendFactor, BufferCreateInfo,
-        BufferUsageFlags, ClearColorValue, ClearValue, ColorComponentFlags,
-        CommandBufferBeginInfo, CommandBufferLevel, CommandBufferUsageFlags,
-        CommandPoolCreateFlags, CommandPoolCreateInfo, CullModeFlags,
+        AttachmentReference, AttachmentStoreOp, BlendFactor, BorderColor,
+        BufferCreateInfo, BufferImageCopy, BufferUsageFlags, ClearColorValue,
+        ClearValue, ColorComponentFlags, CommandBufferBeginInfo,
+        CommandBufferLevel, CommandBufferUsageFlags, CommandPoolCreateFlags,
+        CommandPoolCreateInfo, CompareOp, CullModeFlags,
         DebugUtilsMessageSeverityFlagsEXT, DebugUtilsMessageTypeFlagsEXT,
-        DebugUtilsMessengerCreateInfoEXT, DescriptorBufferInfo,
-        DescriptorPoolCreateInfo, DescriptorPoolSize,
-        DescriptorSetAllocateInfo, DescriptorSetLayoutBinding,
-        DescriptorSetLayoutCreateInfo, DescriptorType, DeviceCreateInfo,
-        DeviceQueueCreateInfo, Format, FrontFace, GraphicsPipelineCreateInfo,
-        ImageLayout, IndexType, InstanceCreateInfo, LogicOp,
-        MemoryPropertyFlags, PhysicalDevice, PhysicalDeviceType,
-        PipelineBindPoint, PipelineColorBlendAttachmentState,
-        PipelineColorBlendStateCreateInfo,
+        DebugUtilsMessengerCreateInfoEXT, DependencyFlags,
+        DescriptorBufferInfo, DescriptorImageInfo, DescriptorPoolCreateInfo,
+        DescriptorPoolSize, DescriptorSetAllocateInfo,
+        DescriptorSetLayoutBinding, DescriptorSetLayoutCreateInfo,
+        DescriptorType, DeviceCreateInfo, DeviceQueueCreateInfo, Extent3D,
+        Filter, Format, FrontFace, GraphicsPipelineCreateInfo,
+        ImageAspectFlags, ImageCreateInfo, ImageLayout, ImageMemoryBarrier,
+        ImageSubresourceLayers, ImageSubresourceRange, ImageTiling, ImageType,
+        ImageUsageFlags, ImageView, ImageViewCreateInfo, ImageViewType,
+        IndexType, InstanceCreateInfo, LogicOp, MemoryPropertyFlags, Offset3D,
+        PhysicalDevice, PhysicalDeviceType, PipelineBindPoint,
+        PipelineColorBlendAttachmentState, PipelineColorBlendStateCreateInfo,
         PipelineInputAssemblyStateCreateInfo, PipelineLayoutCreateInfo,
         PipelineMultisampleStateCreateInfo,
         PipelineRasterizationStateCreateInfo, PipelineShaderStageCreateInfo,
         PipelineStageFlags, PipelineVertexInputStateCreateInfo,
         PipelineViewportStateCreateInfo, PolygonMode, PrimitiveTopology,
         QueueFlags, RenderPassBeginInfo, RenderPassCreateInfo,
-        Result as VkResult, SampleCountFlags, ShaderStageFlags, SharingMode,
-        SubpassContents, SubpassDescription, VertexInputAttributeDescription,
+        SampleCountFlags, Sampler, SamplerAddressMode, SamplerCreateInfo,
+        SamplerMipmapMode, ShaderStageFlags, SharingMode, SubpassContents,
+        SubpassDescription, VertexInputAttributeDescription,
         VertexInputBindingDescription, VertexInputRate, WriteDescriptorSet,
-        API_VERSION_1_0,
+        API_VERSION_1_0, QUEUE_FAMILY_IGNORED,
     },
     LoadingError,
 };
@@ -59,6 +66,7 @@ use surface::Surface;
 use swapchain::Swapchain;
 use sync_objects::{Fence, Semaphore};
 use vek::{Mat4, Vec2, Vec3};
+use vk_mem::{Alloc, AllocationCreateFlags};
 use winit::{
     dpi::{LogicalSize, Size},
     event_loop::ActiveEventLoop,
@@ -90,18 +98,22 @@ const VERTICES: &[Vertex] = &[
     Vertex {
         pos: Vec2::new(-0.5, -0.5),
         col: Vec3::new(0.0, 0.0, 1.0),
+        coord: Vec2::new(0.0, 1.0),
     },
     Vertex {
         pos: Vec2::new(-0.5, 0.5),
         col: Vec3::new(0.0, 1.0, 1.0),
+        coord: Vec2::new(0.0, 0.0),
     },
     Vertex {
         pos: Vec2::new(0.5, 0.5),
         col: Vec3::new(1.0, 1.0, 1.0),
+        coord: Vec2::new(1.0, 0.0),
     },
     Vertex {
         pos: Vec2::new(0.5, -0.5),
         col: Vec3::new(1.0, 0.0, 1.0),
+        coord: Vec2::new(1.0, 1.0),
     },
 ];
 
@@ -120,11 +132,12 @@ struct Uniform {
 struct Vertex {
     pos: vek::Vec2<f32>,
     col: Vec3<f32>,
+    coord: Vec2<f32>,
 }
 impl Vertex {
     fn vertex_attribute_descriptions(
         binding: u32,
-    ) -> [VertexInputAttributeDescription; 2] {
+    ) -> [VertexInputAttributeDescription; 3] {
         [
             VertexInputAttributeDescription::default()
                 .location(0)
@@ -136,6 +149,11 @@ impl Vertex {
                 .binding(binding)
                 .offset(offset_of!(Vertex, col) as u32)
                 .format(Format::R32G32B32_SFLOAT),
+            VertexInputAttributeDescription::default()
+                .location(2)
+                .binding(binding)
+                .offset(offset_of!(Vertex, coord) as u32)
+                .format(Format::R32G32_SFLOAT),
         ]
     }
     fn vertex_binding_descriptions(
@@ -166,7 +184,7 @@ pub struct Context {
     _debug_messenger: Option<DebugMessenger>,
     surface_derived: Option<SurfaceDerived>,
     command_buffers: Vec<command_buffers::CommandBuffer>,
-    descriptor_sets: Vec<DescriptorSet>,
+    uniform_descriptor_sets: Vec<DescriptorSet>,
     vertex_buffers: Vec<ManagedMappableBuffer<Vertex>>,
     //TODO: Apparently this uniform buffer is captured by the descriptor set
     uniform_buffers: Vec<ManagedMappableBuffer<Uniform>>,
@@ -182,6 +200,8 @@ pub struct Context {
     vert_shader_mod: ShaderModule,
     frag_shader_mod: ShaderModule,
     start_time: Instant,
+    _gpu_image_view: GpuImageView,
+    _texture_sampler: TextureSampler,
 }
 
 #[derive(Debug, Default)]
@@ -354,7 +374,7 @@ pub enum RenderSetupError {
     #[error("Could not create swapchain")]
     SwapchainCreation,
     #[error("Unknown vulkan error while {0}. Error code {1:?}")]
-    UnknownVulkan(String, VkResult),
+    UnknownVulkan(String, ash::vk::Result),
 }
 
 #[allow(dead_code)]
@@ -376,7 +396,7 @@ pub enum ContextCreationError {
     #[error("Could not create command buffers")]
     CommandBufferCreation,
     #[error("Unknown vulkan error while {0}. Error code {1:?}")]
-    UnknownVulkan(String, VkResult),
+    UnknownVulkan(String, ash::vk::Result),
     #[error("Error creating window: {0:?}")]
     WindowCreation(#[from] winit::error::OsError),
     #[error("Could not make shader compiler")]
@@ -387,6 +407,10 @@ pub enum ContextCreationError {
     RenderSetup(#[from] RenderSetupError),
     #[error("Error making descriptor set")]
     DescriptorSetCreation,
+    #[error("Couldn't find texture")]
+    MissingTexture,
+    #[error("Couldn't decode texture")]
+    InvalidTexture,
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -465,8 +489,8 @@ impl Context {
                 .map(|bytes| unsafe { CStr::from_ptr(*bytes) }),
         );
 
-        if vk_version < ash::vk::API_VERSION_1_1 {
-            mandatory_extensions.push(ash::khr::maintenance1::NAME)
+        if vk_version < ash::vk::API_VERSION_1_3 {
+            return Err(InstanceCreation);
         }
 
         let mut missing_mandatory_extensions =
@@ -599,9 +623,10 @@ impl Context {
             .ok_or(NoSuitableDevice)?;
         //TODO: Properly check for these extensions
         let device_extension_names = vec![ash::khr::swapchain::NAME.as_ptr()];
-        let mut queue_family_indices = HashSet::with_capacity(2);
+        let mut queue_family_indices = HashSet::with_capacity(3);
         queue_family_indices.insert(scored_phys_dev.present_queue_index);
         queue_family_indices.insert(scored_phys_dev.graphics_queue_index);
+        queue_family_indices.insert(scored_phys_dev.transfer_queue_index);
         let queue_create_infos: Vec<_> = queue_family_indices
             .iter()
             .map(|qfi| {
@@ -660,13 +685,20 @@ impl Context {
                     Err(ShaderModuleCreationErrors(vec![e1, e2]))
                 }
             }?;
-        let bindings = &[DescriptorSetLayoutBinding::default()
-            .binding(0)
-            .descriptor_count(1)
-            .stage_flags(ShaderStageFlags::VERTEX)
-            .descriptor_type(DescriptorType::UNIFORM_BUFFER)];
-        let descriptor_set_layout_ci =
-            DescriptorSetLayoutCreateInfo::default().bindings(bindings);
+        let descriptor_bindings = &[
+            DescriptorSetLayoutBinding::default()
+                .binding(0)
+                .descriptor_count(1)
+                .stage_flags(ShaderStageFlags::VERTEX)
+                .descriptor_type(DescriptorType::UNIFORM_BUFFER),
+            DescriptorSetLayoutBinding::default()
+                .binding(1)
+                .descriptor_type(DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(ShaderStageFlags::FRAGMENT),
+        ];
+        let descriptor_set_layout_ci = DescriptorSetLayoutCreateInfo::default()
+            .bindings(descriptor_bindings);
         //SAFETY: Valid ci
         let descriptor_set_layout = unsafe {
             DescriptorSetLayout::new(&device, &descriptor_set_layout_ci)
@@ -675,11 +707,19 @@ impl Context {
 
         let descriptor_set_layouts = &[descriptor_set_layout.as_inner()];
 
-        let pool_sizes = &[DescriptorPoolSize::default()
-            .descriptor_count(MAX_FRAMES_IN_FLIGHT)
-            .ty(DescriptorType::UNIFORM_BUFFER)];
+        let pool_sizes = &[
+            DescriptorPoolSize::default()
+                .descriptor_count(MAX_FRAMES_IN_FLIGHT)
+                .ty(DescriptorType::UNIFORM_BUFFER),
+            DescriptorPoolSize::default()
+                .descriptor_count(MAX_FRAMES_IN_FLIGHT)
+                .ty(DescriptorType::COMBINED_IMAGE_SAMPLER),
+        ];
+        let max_sets = pool_sizes
+            .iter()
+            .fold(0, |acc, dps| dps.descriptor_count + acc);
         let descriptor_pool_ci = DescriptorPoolCreateInfo::default()
-            .max_sets(MAX_FRAMES_IN_FLIGHT)
+            .max_sets(max_sets)
             .pool_sizes(pool_sizes);
         let descriptor_pool =
             //SAFETY: valid ci
@@ -739,11 +779,9 @@ impl Context {
         let mut render_complete_semaphores =
             Vec::with_capacity(MAX_FRAMES_IN_FLIGHT as usize);
         let mut fences = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT as usize);
-        let buffer_qfis = &[scored_phys_dev.graphics_queue_index];
 
         let vertex_buffer_ci = BufferCreateInfo::default()
             .sharing_mode(SharingMode::EXCLUSIVE)
-            .queue_family_indices(buffer_qfis)
             .usage(BufferUsageFlags::VERTEX_BUFFER)
             .size(size_of_val(VERTICES) as u64);
 
@@ -758,7 +796,6 @@ impl Context {
         };
         let index_buffer_ci = BufferCreateInfo::default()
             .sharing_mode(SharingMode::EXCLUSIVE)
-            .queue_family_indices(buffer_qfis)
             .usage(BufferUsageFlags::INDEX_BUFFER)
             .size(size_of_val(INDICES) as u64);
 
@@ -772,7 +809,6 @@ impl Context {
         };
         let uniform_buffer_ci = BufferCreateInfo::default()
             .sharing_mode(SharingMode::EXCLUSIVE)
-            .queue_family_indices(buffer_qfis)
             .usage(BufferUsageFlags::UNIFORM_BUFFER)
             .size(size_of::<Uniform>() as u64);
 
@@ -824,18 +860,214 @@ impl Context {
             fences.push(Fence::new(&device).unwrap());
         }
 
+        let image_buffer = image::open("res/texture.png")
+            .map_err(|_| MissingTexture)?
+            .into_rgba8();
+        let transfer_command_pool_ci = CommandPoolCreateInfo::default()
+            .queue_family_index(scored_phys_dev.transfer_queue_index)
+            .flags(CommandPoolCreateFlags::TRANSIENT);
+        let transfer_command_pool =
+            //SAFETY: valid cis
+            Rc::new(unsafe { CommandPool::new(&device, &transfer_command_pool_ci) }
+                            .unwrap());
+
+        let staging_buffer_ci = BufferCreateInfo::default()
+            .usage(BufferUsageFlags::TRANSFER_SRC)
+            .size(size_of_val(image_buffer.as_raw().deref()) as u64)
+            .sharing_mode(SharingMode::EXCLUSIVE);
+
+        let staging_buffer_ai = vk_mem::AllocationCreateInfo {
+            flags: AllocationCreateFlags::MAPPED
+                | AllocationCreateFlags::HOST_ACCESS_SEQUENTIAL_WRITE,
+            usage: vk_mem::MemoryUsage::AutoPreferHost,
+            required_flags: MemoryPropertyFlags::HOST_VISIBLE,
+            preferred_flags: MemoryPropertyFlags::HOST_COHERENT,
+            ..Default::default()
+        };
+
+        //SAFETY: Valid ci and ai
+        let staging_buffer: ManagedMappableBuffer<u8> = unsafe {
+            ManagedMappableBuffer::new(
+                &device,
+                &staging_buffer_ci,
+                &staging_buffer_ai,
+            )
+        }
+        .unwrap();
+
+        let raw_image = image_buffer.as_raw();
+
+        staging_buffer.upload_data(raw_image.as_ref());
+
+        let mut image_transfer_command_buffer = transfer_command_pool
+            .alloc_command_buffer(CommandBufferLevel::PRIMARY)
+            .unwrap();
+
+        let image_create_info = ImageCreateInfo::default()
+            .image_type(ImageType::TYPE_2D)
+            .extent(Extent3D {
+                width: image_buffer.width(),
+                height: image_buffer.height(),
+                depth: 1,
+            })
+            .mip_levels(1)
+            .array_layers(1)
+            .format(Format::R8G8B8A8_SRGB)
+            .tiling(ImageTiling::OPTIMAL)
+            .initial_layout(ImageLayout::UNDEFINED)
+            .usage(ImageUsageFlags::SAMPLED | ImageUsageFlags::TRANSFER_DST)
+            .sharing_mode(SharingMode::EXCLUSIVE)
+            .samples(SampleCountFlags::TYPE_1);
+        let image_allocation_info = vk_mem::AllocationCreateInfo {
+            usage: vk_mem::MemoryUsage::AutoPreferDevice,
+            ..Default::default()
+        };
+        //SAFETY: Valid cis
+        let gpu_image = unsafe {
+            GpuImage::new(&device, &image_create_info, &image_allocation_info)
+        }
+        .unwrap();
+        let subresource = ImageSubresourceRange::default()
+            .aspect_mask(ImageAspectFlags::COLOR)
+            .base_mip_level(0)
+            .level_count(1)
+            .base_array_layer(0)
+            .layer_count(1);
+        let image_transfer_begin_info = CommandBufferBeginInfo::default()
+            .flags(CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+        let image_transition_pre_transfer_barrier =
+            ImageMemoryBarrier::default()
+                .old_layout(ImageLayout::UNDEFINED)
+                .new_layout(ImageLayout::TRANSFER_DST_OPTIMAL)
+                .src_queue_family_index(QUEUE_FAMILY_IGNORED)
+                .dst_queue_family_index(QUEUE_FAMILY_IGNORED)
+                .image(gpu_image.inner)
+                .subresource_range(subresource)
+                .src_access_mask(AccessFlags::empty())
+                .dst_access_mask(AccessFlags::TRANSFER_WRITE);
+        let image_transition_post_transfer_barrier =
+            ImageMemoryBarrier::default()
+                .old_layout(ImageLayout::TRANSFER_DST_OPTIMAL)
+                .new_layout(ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                .src_queue_family_index(scored_phys_dev.transfer_queue_index)
+                .dst_queue_family_index(scored_phys_dev.graphics_queue_index)
+                .image(gpu_image.inner)
+                .subresource_range(subresource)
+                .src_access_mask(AccessFlags::TRANSFER_WRITE)
+                .dst_access_mask(AccessFlags::SHADER_READ);
+        let image_subresource = ImageSubresourceLayers::default()
+            .aspect_mask(ImageAspectFlags::COLOR)
+            .mip_level(0)
+            .base_array_layer(0)
+            .layer_count(1);
+        let regions = &[BufferImageCopy::default()
+            .buffer_offset(0)
+            .buffer_row_length(0)
+            .buffer_image_height(0)
+            .image_subresource(image_subresource)
+            .image_offset(Offset3D { x: 0, y: 0, z: 0 })
+            .image_extent(Extent3D {
+                width: image_buffer.width(),
+                height: image_buffer.height(),
+                depth: 1,
+            })];
+        image_transfer_command_buffer
+            .record_and_submit(
+                scored_phys_dev.transfer_queue_index,
+                0,
+                &[],
+                &[],
+                &[],
+                &image_transfer_begin_info,
+                ash::vk::Fence::null(),
+                |dev, cb| -> Result<(), ash::vk::Result> {
+                    //SAFETY: cb and all parameters are from the same device
+                    unsafe {
+                        dev.cmd_pipeline_barrier(
+                            cb,
+                            PipelineStageFlags::TOP_OF_PIPE,
+                            PipelineStageFlags::TRANSFER,
+                            DependencyFlags::empty(),
+                            &[],
+                            &[],
+                            &[image_transition_pre_transfer_barrier],
+                        );
+                        dev.cmd_copy_buffer_to_image(
+                            cb,
+                            staging_buffer.get_inner(),
+                            gpu_image.inner,
+                            ImageLayout::TRANSFER_DST_OPTIMAL,
+                            regions,
+                        );
+                        dev.cmd_pipeline_barrier(
+                            cb,
+                            PipelineStageFlags::TRANSFER,
+                            PipelineStageFlags::FRAGMENT_SHADER,
+                            DependencyFlags::empty(),
+                            &[],
+                            &[],
+                            &[image_transition_post_transfer_barrier],
+                        );
+                        Ok(())
+                    }
+                },
+            )
+            .unwrap();
+
+        let gpu_image = Arc::new(gpu_image);
+        let image_view_ci = ImageViewCreateInfo::default()
+            .image(gpu_image.inner)
+            .view_type(ImageViewType::TYPE_2D)
+            .format(Format::R8G8B8A8_SRGB)
+            .subresource_range(subresource);
+
+        let gpu_image_view =
+            unsafe { GpuImageView::new(&gpu_image, image_view_ci) }.unwrap();
+        let sampler_ci = SamplerCreateInfo::default()
+            .mag_filter(Filter::LINEAR)
+            .min_filter(Filter::LINEAR)
+            .address_mode_u(SamplerAddressMode::REPEAT)
+            .address_mode_v(SamplerAddressMode::REPEAT)
+            .address_mode_w(SamplerAddressMode::REPEAT)
+            .anisotropy_enable(false)
+            .max_anisotropy(16.)
+            .unnormalized_coordinates(false)
+            .border_color(BorderColor::INT_OPAQUE_BLACK)
+            .compare_enable(false)
+            .compare_op(CompareOp::ALWAYS)
+            .mipmap_mode(SamplerMipmapMode::LINEAR)
+            .mip_lod_bias(0.)
+            .min_lod(0.0)
+            .max_lod(0.0);
+
+        let texture_sampler =
+            unsafe { TextureSampler::new(&device, &sampler_ci) }.unwrap();
+        device.wait_idle().unwrap();
+
         for (i, descriptor_set) in descriptor_sets.iter_mut().enumerate() {
             let buffer_infos = &[DescriptorBufferInfo::default()
                 .buffer(uniform_buffers[i].get_inner())
                 .offset(0)
                 .range(size_of::<Uniform>() as u64)];
+            let image_infos = &[DescriptorImageInfo::default()
+                .image_layout(ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                .image_view(gpu_image_view.inner)
+                .sampler(texture_sampler.inner)];
 
-            let descriptor_set_configs = &[WriteDescriptorSet::default()
-                .dst_set(descriptor_set.get_inner())
-                .dst_binding(0)
-                .dst_array_element(0)
-                .descriptor_type(DescriptorType::UNIFORM_BUFFER)
-                .buffer_info(buffer_infos)];
+            let descriptor_set_configs = &[
+                WriteDescriptorSet::default()
+                    .dst_set(descriptor_set.get_inner())
+                    .dst_binding(0)
+                    .dst_array_element(0)
+                    .descriptor_type(DescriptorType::UNIFORM_BUFFER)
+                    .buffer_info(buffer_infos),
+                WriteDescriptorSet::default()
+                    .dst_set(descriptor_set.get_inner())
+                    .dst_binding(1)
+                    .dst_array_element(0)
+                    .descriptor_type(DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .image_info(image_infos),
+            ];
 
             //SAFETY: Valid config
             unsafe {
@@ -849,7 +1081,7 @@ impl Context {
             sync_index: 0,
             win,
             command_buffers,
-            descriptor_sets,
+            uniform_descriptor_sets: descriptor_sets,
             _instance: instance,
             _debug_messenger,
             surface_derived: Some(SurfaceDerived::new(
@@ -874,6 +1106,8 @@ impl Context {
             vert_shader_mod,
             frag_shader_mod,
             start_time: Instant::now(),
+            _gpu_image_view: gpu_image_view,
+            _texture_sampler: texture_sampler,
         })
     }
     pub fn resize(&mut self) {
@@ -911,7 +1145,8 @@ impl Context {
                 let vertex_buffer = &mut self.vertex_buffers[sync_index];
                 let index_buffer = &mut self.index_buffers[sync_index];
                 let uniform_buffer = &mut self.uniform_buffers[sync_index];
-                let descriptor_set = &mut self.descriptor_sets[sync_index];
+                let uniform_descriptor_set =
+                    &mut self.uniform_descriptor_sets[sync_index];
                 let cb = &mut self.command_buffers[sync_index];
                 //SAFETY: Semaphore derives from same device as swapchain
                 let fb_index = unsafe {
@@ -925,8 +1160,7 @@ impl Context {
                 let fb = &mut sd.swapchain_framebuffers[fb_index as usize];
                 let model = Mat4::rotation_z(
                     90f32.to_radians()
-                        * self.start_time.elapsed().as_secs_f32()
-                        * 0.0,
+                        * self.start_time.elapsed().as_secs_f32(),
                 );
                 let view: Mat4<f32> = Mat4::look_at_rh(
                     Vec3::new(0., -1., 2.),
@@ -967,7 +1201,7 @@ impl Context {
                                 PipelineBindPoint::GRAPHICS,
                                 self.pipeline_layout.get_inner(),
                                 0,
-                                &[descriptor_set.get_inner()],
+                                &[uniform_descriptor_set.get_inner()],
                                 &[],
                             );
                             dev.cmd_bind_index_buffer(
@@ -1036,6 +1270,7 @@ struct ScoredPhysDev {
     phys_dev: PhysicalDevice,
     graphics_queue_index: u32,
     present_queue_index: u32,
+    transfer_queue_index: u32,
 }
 impl PartialEq for ScoredPhysDev {
     fn eq(&self, other: &Self) -> bool {
@@ -1120,6 +1355,18 @@ unsafe fn evaluate_physical_device(
                 })
                 .map(|(i, _)| i as u32)
         });
+
+    let transfer_queue_index = properties
+        .queue_families
+        .iter()
+        .copied()
+        .enumerate()
+        .find(|(_qfi, props)| {
+            props.queue_flags.contains(QueueFlags::TRANSFER)
+                && (!props.queue_flags & !QueueFlags::TRANSFER).is_empty()
+        })
+        .map(|(i, _props)| i as u32)
+        .or(graphics_queue_index);
     if properties.extensions.iter().any(|ext| {
         ash::khr::swapchain::NAME.eq(ext.extension_name_as_c_str().expect(
             "It'd be weird if we got an extension that wasn't a valid cstr",
@@ -1156,6 +1403,9 @@ unsafe fn evaluate_physical_device(
                     phys_dev,
                     graphics_queue_index,
                     present_queue_index,
+                    //Can unwrap because this is guaranteed to be Some if
+                    //graphics_queue_index is some
+                    transfer_queue_index: transfer_queue_index.unwrap(),
                 }
             })
         })
@@ -1178,5 +1428,107 @@ fn graphics_validation_sev_to_debug_utils_flags(
         ValidationLevel::Warn => warning,
         ValidationLevel::Info => info,
         ValidationLevel::Verbose => verbose,
+    }
+}
+
+#[derive(Debug)]
+struct GpuImage {
+    inner: ash::vk::Image,
+    parent: Arc<Device>,
+    allocation: vk_mem::Allocation,
+}
+impl GpuImage {
+    //SAFETY REQUIREMENTS: Valid ci and ai
+    unsafe fn new(
+        device: &Arc<Device>,
+        image_create_info: &ImageCreateInfo,
+        image_allocation_info: &vk_mem::AllocationCreateInfo,
+    ) -> VkResult<Self> {
+        //SAFETY: valid cis
+        let (inner, allocation) = unsafe {
+            device
+                .get_allocator_ref()
+                .create_image(image_create_info, image_allocation_info)
+        }?;
+
+        Ok(Self {
+            parent: device.clone(),
+            inner,
+            allocation,
+        })
+    }
+}
+
+impl Drop for GpuImage {
+    fn drop(&mut self) {
+        //SAFETY:
+        unsafe {
+            self.parent
+                .get_allocator_ref()
+                .destroy_image(self.inner, &mut self.allocation)
+        };
+    }
+}
+
+#[derive(Debug)]
+
+struct GpuImageView {
+    parent: Arc<GpuImage>,
+    inner: ImageView,
+}
+
+impl Drop for GpuImageView {
+    fn drop(&mut self) {
+        unsafe {
+            self.parent
+                .parent
+                .as_inner_ref()
+                .destroy_image_view(self.inner, None)
+        };
+    }
+}
+
+impl GpuImageView {
+    unsafe fn new(
+        parent_image: &Arc<GpuImage>,
+        ci: ImageViewCreateInfo,
+    ) -> VkResult<Self> {
+        let inner = unsafe {
+            parent_image
+                .parent
+                .as_inner_ref()
+                .create_image_view(&ci, None)
+        }?;
+
+        Ok(Self {
+            parent: parent_image.clone(),
+            inner,
+        })
+    }
+}
+
+#[derive(Debug)]
+struct TextureSampler {
+    parent: Arc<Device>,
+    inner: Sampler,
+}
+
+impl Drop for TextureSampler {
+    fn drop(&mut self) {
+        unsafe { self.parent.as_inner_ref().destroy_sampler(self.inner, None) };
+    }
+}
+
+impl TextureSampler {
+    unsafe fn new(
+        device: &Arc<Device>,
+        sampler_ci: &SamplerCreateInfo,
+    ) -> VkResult<Self> {
+        let inner =
+            unsafe { device.as_inner_ref().create_sampler(sampler_ci, None) }?;
+        Ok(Self {
+            parent: device.clone(),
+            inner,
+        })
     }
 }

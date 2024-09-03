@@ -50,6 +50,11 @@ impl<T: Pod + Zeroable> ManagedMappableBuffer<T> {
         unsafe {
             copy_nonoverlapping(data.as_ptr(), mapping as *mut T, data.len())
         };
+
+        self.parent
+            .get_allocator_ref()
+            .flush_allocation(&self.allocation, 0, size_of_val(data) as u64)
+            .unwrap();
     }
 }
 

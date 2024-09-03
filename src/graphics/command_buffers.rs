@@ -132,4 +132,24 @@ impl CommandPool {
 
         Ok(cbs)
     }
+
+    pub(crate) fn alloc_command_buffer(
+        self: &Rc<Self>,
+        level: CommandBufferLevel,
+    ) -> VkResult<CommandBuffer> {
+        let ai = CommandBufferAllocateInfo::default()
+            .command_pool(self.inner)
+            .command_buffer_count(1)
+            .level(level);
+        //SAFETY: Device and inner are from same place
+        let raw_cb = unsafe {
+            self.parent.as_inner_ref().allocate_command_buffers(&ai)
+        }?
+        .pop()
+        .unwrap();
+        Ok(CommandBuffer {
+            inner: raw_cb,
+            parent: self.clone(),
+        })
+    }
 }

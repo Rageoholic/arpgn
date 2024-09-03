@@ -1,4 +1,4 @@
-#![warn(unsafe_op_in_unsafe_fn, clippy::undocumented_unsafe_blocks)]
+#![warn(unsafe_op_in_unsafe_fn)]
 #![allow(clippy::redundant_closure)]
 
 use graphics::Context;
