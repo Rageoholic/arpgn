@@ -13,6 +13,7 @@
 use core::slice;
 use std::{
     collections::HashMap,
+    ffi::CString,
     fmt::Debug,
     mem::ManuallyDrop,
     sync::{Arc, Mutex, MutexGuard},
@@ -74,6 +75,7 @@ impl Device {
         instance: &Arc<super::Instance>,
         phys_dev: PhysicalDevice,
         ci: &DeviceCreateInfo,
+        debug_name: Option<String>,
     ) -> VkResult<Self> {
         //SAFETY: valid ci. phys_dev derived from instance. Preconditions of
         //this unsafe function
@@ -114,7 +116,20 @@ impl Device {
             //SAFETY: Valid ci
             ManuallyDrop::new(unsafe { vk_mem::Allocator::new(allocator_ci) }?);
         let debug_utils_device = instance.is_debug().then(|| {
-            ash::ext::debug_utils::Device::new(instance.as_inner_ref(), &inner)
+            let debug_device = ash::ext::debug_utils::Device::new(
+                instance.as_inner_ref(),
+                &inner,
+            );
+            if let Some(dn) = debug_name {
+                let debug_name = CString::new(dn).unwrap();
+                let name_info = DebugUtilsObjectNameInfoEXT::default()
+                    .object_handle(inner.handle())
+                    .object_name(&debug_name);
+                unsafe { debug_device.set_debug_utils_object_name(&name_info) }
+                    .unwrap();
+            }
+
+            debug_device
         });
 
         Ok(Self {

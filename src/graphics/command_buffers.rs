@@ -8,7 +8,7 @@ use ash::{
     },
 };
 
-use super::{device::QueueSubmitError, Device};
+use super::{device::QueueSubmitError, utils::associate_debug_name, Device};
 
 #[derive(Debug)]
 pub struct CommandBuffer {
@@ -94,10 +94,12 @@ impl CommandPool {
     pub unsafe fn new(
         device: &Arc<Device>,
         ci: &CommandPoolCreateInfo,
+        debug_name: Option<String>,
     ) -> VkResult<Self> {
         let inner =
             //SAFETY: valid ci from caller
             unsafe { device.as_inner_ref().create_command_pool(ci, None) }?;
+        associate_debug_name!(device, inner, debug_name);
         Ok(CommandPool {
             inner,
             parent: device.clone(),
@@ -109,6 +111,9 @@ impl CommandPool {
         self: Rc<Self>,
         count: u32,
         level: CommandBufferLevel,
+        mut opt_f: Option<
+            impl FnMut(usize, ash::vk::CommandBuffer) -> Option<String>,
+        >,
     ) -> VkResult<Vec<CommandBuffer>> {
         let mut cbs = Vec::with_capacity(count as usize);
         let ai = CommandBufferAllocateInfo::default()
@@ -123,7 +128,13 @@ impl CommandPool {
         let raw_cbs = unsafe {
             self.parent.as_inner_ref().allocate_command_buffers(&ai)
         }?;
-        for raw_cb in raw_cbs {
+        for (i, raw_cb) in raw_cbs.into_iter().enumerate() {
+            if let Some(ref mut f) = opt_f {
+                if self.parent.is_debug() {
+                    let debug_name = f(i, raw_cb);
+                    associate_debug_name!(self.parent, raw_cb, debug_name);
+                }
+            }
             cbs.push(CommandBuffer {
                 inner: raw_cb,
                 parent: self.clone(),

@@ -5,7 +5,7 @@ use ash::{
     vk::{GraphicsPipelineCreateInfo, Pipeline as RawPipeline, PipelineCache},
 };
 
-use super::Device;
+use super::{utils::associate_debug_name, Device};
 
 #[derive(Debug)]
 pub struct Pipeline {
@@ -28,6 +28,7 @@ impl Pipeline {
     pub unsafe fn new_graphics_pipelines(
         device: &Arc<Device>,
         ci: &[GraphicsPipelineCreateInfo],
+        mut f: Option<impl FnMut(usize, ash::vk::Pipeline) -> Option<String>>,
     ) -> VkResult<Vec<Self>> {
         //SAFETY: Valid cis
         let inners = unsafe {
@@ -50,9 +51,16 @@ impl Pipeline {
         Ok(inners
             .iter()
             .copied()
-            .map(|inner| Self {
-                inner,
-                parent: device.clone(),
+            .enumerate()
+            .map(|(i, inner)| {
+                if let Some(ref mut f) = f {
+                    let debug_name = f(i, inner);
+                    associate_debug_name!(device, inner, debug_name)
+                }
+                Self {
+                    inner,
+                    parent: device.clone(),
+                }
             })
             .collect())
     }

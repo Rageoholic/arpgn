@@ -15,7 +15,7 @@ use ash::{
     },
 };
 
-use super::{Device, PhantomUnsendUnsync};
+use super::{utils::associate_debug_name, Device, PhantomUnsendUnsync};
 
 #[derive(Debug)]
 pub struct DescriptorSetLayout {
@@ -38,12 +38,15 @@ impl DescriptorSetLayout {
     pub unsafe fn new(
         device: &Arc<Device>,
         ci: &DescriptorSetLayoutCreateInfo,
+        debug_name: Option<String>,
     ) -> VkResult<Self> {
+        //SAFETY: Valid ci
+        let descriptor_set_layout = unsafe {
+            device.as_inner_ref().create_descriptor_set_layout(ci, None)
+        }?;
+        associate_debug_name!(device, descriptor_set_layout, debug_name);
         Ok(Self {
-            //SAFETY: Valid ci
-            inner: unsafe {
-                device.as_inner_ref().create_descriptor_set_layout(ci, None)
-            }?,
+            inner: descriptor_set_layout,
             parent: device.clone(),
         })
     }
@@ -82,12 +85,14 @@ impl DescriptorPool {
     pub unsafe fn new(
         device: &Arc<Device>,
         ci: &DescriptorPoolCreateInfo,
+        debug_name: Option<String>,
     ) -> VkResult<Self> {
+        let descriptor_pool =
+            unsafe { device.as_inner_ref().create_descriptor_pool(ci, None) }?;
+        associate_debug_name!(device, descriptor_pool, debug_name);
         Ok(Self {
             //SAFETY: Valid ci
-            inner: unsafe {
-                device.as_inner_ref().create_descriptor_pool(ci, None)
-            }?,
+            inner: descriptor_pool,
             parent: device.clone(),
             _phantom: PhantomData,
         })
@@ -101,15 +106,29 @@ impl DescriptorSet {
     pub unsafe fn alloc(
         pool: &Rc<DescriptorPool>,
         ai: &DescriptorSetAllocateInfo,
+        mut f: Option<
+            impl FnMut(usize, ash::vk::DescriptorSet) -> Option<String>,
+        >,
     ) -> VkResult<Vec<Self>> {
         //SAFETY: valid ai. ai.descriptor_pool == pool.inner
         unsafe { pool.parent.as_inner_ref().allocate_descriptor_sets(ai) }.map(
             |raw_handles| {
                 raw_handles
                     .into_iter()
-                    .map(|inner| Self {
-                        inner,
-                        _parent: pool.clone(),
+                    .enumerate()
+                    .map(|(i, inner)| {
+                        if let Some(ref mut f) = f {
+                            let debug_name = f(i, inner);
+                            associate_debug_name!(
+                                pool.parent,
+                                inner,
+                                debug_name
+                            );
+                        }
+                        Self {
+                            inner,
+                            _parent: pool.clone(),
+                        }
                     })
                     .collect()
             },

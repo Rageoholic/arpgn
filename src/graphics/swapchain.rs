@@ -233,6 +233,9 @@ impl Swapchain {
     pub fn create_compatible_framebuffers(
         self: &Arc<Self>,
         compatible_renderpass: &RenderPass,
+        mut f: Option<
+            impl FnMut(usize, ash::vk::Framebuffer) -> Option<String>,
+        >,
     ) -> VkResult<Vec<SwapchainFramebuffer>> {
         let mut framebuffers = Vec::with_capacity(self.image_views.len());
         for (i, iv) in self.image_views.iter().copied().enumerate() {
@@ -244,13 +247,22 @@ impl Swapchain {
                 .height(self.extent.height)
                 .layers(1);
 
+            let framebuffer = unsafe {
+                self.parent_device
+                    .as_inner_ref()
+                    .create_framebuffer(&framebuffer_ci, None)
+            }?;
+            if let Some(ref mut f) = f {
+                let debug_name = f(i, framebuffer);
+                associate_debug_name!(
+                    self.parent_device,
+                    framebuffer,
+                    debug_name
+                );
+            }
             framebuffers.push(SwapchainFramebuffer {
                 //SAFETY: valid ci
-                inner: unsafe {
-                    self.parent_device
-                        .as_inner_ref()
-                        .create_framebuffer(&framebuffer_ci, None)
-                }?,
+                inner: framebuffer,
                 parent: self.clone(),
                 index: i,
             });
@@ -277,6 +289,9 @@ impl Swapchain {
                     .unwrap_or(ash::vk::Fence::null()),
             )
         }
+    }
+    pub fn name_surface(&self, device: Device, debug_name: Option<String>) {
+        associate_debug_name!(device, self.inner, debug_name);
     }
 }
 

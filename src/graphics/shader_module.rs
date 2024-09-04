@@ -20,6 +20,8 @@ use ash::vk::{
 };
 use shaderc::ShaderKind;
 
+use crate::graphics::utils::associate_debug_name;
+
 use super::Device;
 
 #[derive(Debug)]
@@ -60,6 +62,7 @@ impl ShaderModule {
         ty: ShaderStageFlags,
         entry: &str,
         options: Option<&shaderc::CompileOptions>,
+        debug_name: Option<String>,
     ) -> Result<Self, Error> {
         use Error::*;
         let mut file = std::fs::File::open(shader_path)
@@ -94,6 +97,8 @@ impl ShaderModule {
                     _ => unreachable!(),
                 })
         }?;
+
+        associate_debug_name!(device, inner, debug_name);
         Ok(Self {
             inner,
             parent: device.clone(),

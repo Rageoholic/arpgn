@@ -64,7 +64,7 @@ use strum::EnumString;
 use surface::Surface;
 use swapchain::Swapchain;
 use sync_objects::{Fence, Semaphore};
-use utils::debug_label;
+use utils::{associate_debug_name, debug_name};
 use vek::{Mat4, Vec2, Vec3};
 use vk_mem::{Alloc, AllocationCreateFlags};
 use winit::{
@@ -251,7 +251,7 @@ impl SurfaceDerived {
                     present_queue_index,
                     graphics_queue_index,
                     old_swapchain,
-                    debug_label!(device, "Main Swapchain"),
+                    debug_name!(device, "Main Swapchain"),
                 )
             }
             .map_err(|_| SwapchainCreation)?,
@@ -289,10 +289,14 @@ impl SurfaceDerived {
             .subpasses(subpasses);
 
         //SAFETY: Valid ci
-        let render_pass = unsafe { RenderPass::new(device, &render_pass_ci) }
-            .map_err(|e| {
-            UnknownVulkan("creating render pass".to_owned(), e)
-        })?;
+        let render_pass = unsafe {
+            RenderPass::new(
+                device,
+                &render_pass_ci,
+                debug_name!(device, "Main render pass"),
+            )
+        }
+        .map_err(|e| UnknownVulkan("creating render pass".to_owned(), e))?;
 
         let shader_stages = shader_modules
             .iter()
@@ -348,16 +352,21 @@ impl SurfaceDerived {
             .layout(pipeline_layout.get_inner())
             .render_pass(render_pass.get_inner())
             .subpass(0);
-        let pipeline =
-            //SAFETY: valid cis
-            unsafe { Pipeline::new_graphics_pipelines(device, &[pipeline_ci]) }
-                .map_err(|e| {
-                    UnknownVulkan("creating graphics pipeline".into(), e)
-                })?
-                .pop()
-                .expect("How did this not error yet return 0 pipelines?");
+        let pipeline = unsafe {
+            Pipeline::new_graphics_pipelines(
+                device,
+                &[pipeline_ci],
+                Some(|_, _| Some("Graphics Pipeline".into())),
+            )
+        }
+        .map_err(|e| UnknownVulkan("creating graphics pipeline".into(), e))?
+        .pop()
+        .expect("How did this not error yet return 0 pipelines?");
         let swapchain_framebuffers = swapchain
-            .create_compatible_framebuffers(&render_pass)
+            .create_compatible_framebuffers(
+                &render_pass,
+                Some(|i, _| Some(format!("Swapchain framebuffer {}", i))),
+            )
             .map_err(|e| {
                 UnknownVulkan("While creating framebuffers".to_owned(), e)
             })?;
@@ -648,7 +657,12 @@ impl Context {
             //SAFETY: valid ci and phys_dev is derived from instance. We
             //accomplished these
             unsafe {
-                Device::new(&instance, scored_phys_dev.phys_dev, &dev_ci)
+                Device::new(
+                    &instance,
+                    scored_phys_dev.phys_dev,
+                    &dev_ci,
+                    debug_name!(instance, "Main Device"),
+                )
             }
             .map_err(|_| DeviceCreation)?,
         );
@@ -665,6 +679,7 @@ impl Context {
             ShaderStageFlags::VERTEX,
             "main",
             None,
+            debug_name!(device, "Vertex Shader Module"),
         );
         let frag_shader_path = Path::new("shaders/shader.frag");
         let frag_shader_mod = ShaderModule::new(
@@ -674,6 +689,7 @@ impl Context {
             ShaderStageFlags::FRAGMENT,
             "main",
             None,
+            debug_name!(device, "Fragment Shader Module"),
         );
 
         let (vert_shader_mod, frag_shader_mod) =
@@ -702,7 +718,11 @@ impl Context {
             .bindings(descriptor_bindings);
         //SAFETY: Valid ci
         let descriptor_set_layout = unsafe {
-            DescriptorSetLayout::new(&device, &descriptor_set_layout_ci)
+            DescriptorSetLayout::new(
+                &device,
+                &descriptor_set_layout_ci,
+                debug_name!(device, "Descriptor Set Layout"),
+            )
         }
         .map_err(|_| ContextCreationError::DescriptorSetCreation)?;
 
@@ -722,10 +742,16 @@ impl Context {
         let descriptor_pool_ci = DescriptorPoolCreateInfo::default()
             .max_sets(max_sets)
             .pool_sizes(pool_sizes);
-        let descriptor_pool =
-            //SAFETY: valid ci
-            Rc::new(unsafe { DescriptorPool::new(&device, &descriptor_pool_ci) }
-                            .map_err(|_| DescriptorSetCreation)?);
+        let descriptor_pool = Rc::new(
+            unsafe {
+                DescriptorPool::new(
+                    &device,
+                    &descriptor_pool_ci,
+                    debug_name!(device, "Descriptor Pool"),
+                )
+            }
+            .map_err(|_| DescriptorSetCreation)?,
+        );
 
         let duped_layouts = vec![
             descriptor_set_layout.as_inner();
@@ -737,7 +763,11 @@ impl Context {
 
         //SAFETY: valid ai
         let mut descriptor_sets = unsafe {
-            DescriptorSet::alloc(&descriptor_pool, &descriptor_set_ai)
+            DescriptorSet::alloc(
+                &descriptor_pool,
+                &descriptor_set_ai,
+                Some(|i, _| Some(format!("Descriptor set {}", i))),
+            )
         }
         .unwrap();
 
@@ -746,7 +776,7 @@ impl Context {
 
         let pipeline_layout =
             //SAFETY: Valid ci
-            unsafe { PipelineLayout::new(&device, &pipeline_layout_ci) }
+            unsafe { PipelineLayout::new(&device, &pipeline_layout_ci,debug_name!(device,"Pipeline layout")) }
                 .map_err(|e| {
                     UnknownVulkan(
                         "creating pipeline layout".into(),
@@ -758,14 +788,21 @@ impl Context {
             .flags(CommandPoolCreateFlags::RESET_COMMAND_BUFFER);
         let command_pool = Rc::new(
             //SAFETY: Valid ci
-            unsafe { CommandPool::new(&device, &command_pool_ci) }
-                .map_err(|_| CommandBufferCreation)?,
+            unsafe {
+                CommandPool::new(
+                    &device,
+                    &command_pool_ci,
+                    debug_name!(device, "Render command pool"),
+                )
+            }
+            .map_err(|_| CommandBufferCreation)?,
         );
 
         let command_buffers = command_pool
             .alloc_command_buffers(
                 MAX_FRAMES_IN_FLIGHT,
                 CommandBufferLevel::PRIMARY,
+                Some(|i, _| Some(format!("Main command buffer {}", i))),
             )
             .map_err(|_| CommandBufferCreation)?;
 
@@ -831,6 +868,7 @@ impl Context {
                         &device,
                         &vertex_buffer_ci,
                         &vertex_buffer_ai,
+                        debug_name!(device, "Vertex buffer {}", i),
                     )
                 }
                 .unwrap(),
@@ -842,6 +880,7 @@ impl Context {
                         &device,
                         &index_buffer_ci,
                         &index_buffer_ai,
+                        debug_name!(device, "Index buffer {}", i),
                     )
                 }
                 .unwrap(),
@@ -853,6 +892,7 @@ impl Context {
                         &device,
                         &uniform_buffer_ci,
                         &uniform_buffer_ai,
+                        debug_name!(device, "Uniform buffer {}", i),
                     )
                 }
                 .unwrap(),
@@ -860,21 +900,21 @@ impl Context {
             image_available_semaphores.push(
                 Semaphore::new(
                     &device,
-                    debug_label!(device, "image_available_semaphore [{}]", i),
+                    debug_name!(device, "image_available_semaphore [{}]", i),
                 )
                 .unwrap(),
             );
             render_complete_semaphores.push(
                 Semaphore::new(
                     &device,
-                    debug_label!(device, "render_complete_semaphore [{}]", i),
+                    debug_name!(device, "render_complete_semaphore [{}]", i),
                 )
                 .unwrap(),
             );
             render_ready_fences.push(
                 Fence::new(
                     &device,
-                    debug_label!(device, "render_ready_fence [{}]", i),
+                    debug_name!(device, "render_ready_fence [{}]", i),
                 )
                 .unwrap(),
             );
@@ -886,10 +926,17 @@ impl Context {
         let transfer_command_pool_ci = CommandPoolCreateInfo::default()
             .queue_family_index(scored_phys_dev.transfer_queue_index)
             .flags(CommandPoolCreateFlags::TRANSIENT);
-        let transfer_command_pool =
-            //SAFETY: valid cis
-            Rc::new(unsafe { CommandPool::new(&device, &transfer_command_pool_ci) }
-                            .unwrap());
+        //SAFETY: valid cis
+        let transfer_command_pool = Rc::new(
+            unsafe {
+                CommandPool::new(
+                    &device,
+                    &transfer_command_pool_ci,
+                    debug_name!(device, "Transfer Command Pool"),
+                )
+            }
+            .unwrap(),
+        );
 
         let staging_buffer_ci = BufferCreateInfo::default()
             .usage(BufferUsageFlags::TRANSFER_SRC)
@@ -911,6 +958,7 @@ impl Context {
                 &device,
                 &staging_buffer_ci,
                 &staging_buffer_ai,
+                debug_name!(device, "Staging buffer"),
             )
         }
         .unwrap();
@@ -944,7 +992,12 @@ impl Context {
         };
         //SAFETY: Valid cis
         let gpu_image = unsafe {
-            GpuImage::new(&device, &image_create_info, &image_allocation_info)
+            GpuImage::new(
+                &device,
+                &image_create_info,
+                &image_allocation_info,
+                debug_name!(device, "Texture Image"),
+            )
         }
         .unwrap();
         let subresource = ImageSubresourceRange::default()
@@ -1041,8 +1094,14 @@ impl Context {
             .format(Format::R8G8B8A8_SRGB)
             .subresource_range(subresource);
 
-        let gpu_image_view =
-            unsafe { GpuImageView::new(&gpu_image, image_view_ci) }.unwrap();
+        let gpu_image_view = unsafe {
+            GpuImageView::new(
+                &gpu_image,
+                image_view_ci,
+                debug_name!(device, "Texture image view"),
+            )
+        }
+        .unwrap();
         let sampler_ci = SamplerCreateInfo::default()
             .mag_filter(Filter::LINEAR)
             .min_filter(Filter::LINEAR)
@@ -1060,8 +1119,14 @@ impl Context {
             .min_lod(0.0)
             .max_lod(0.0);
 
-        let texture_sampler =
-            unsafe { TextureSampler::new(&device, &sampler_ci) }.unwrap();
+        let texture_sampler = unsafe {
+            TextureSampler::new(
+                &device,
+                &sampler_ci,
+                debug_name!(device, "Texture sampler"),
+            )
+        }
+        .unwrap();
         device.wait_idle().unwrap();
 
         for (i, descriptor_set) in descriptor_sets.iter_mut().enumerate() {
@@ -1462,6 +1527,7 @@ impl GpuImage {
         device: &Arc<Device>,
         image_create_info: &ImageCreateInfo,
         image_allocation_info: &vk_mem::AllocationCreateInfo,
+        debug_name: Option<String>,
     ) -> VkResult<Self> {
         //SAFETY: valid cis
         let (inner, allocation) = unsafe {
@@ -1469,6 +1535,8 @@ impl GpuImage {
                 .get_allocator_ref()
                 .create_image(image_create_info, image_allocation_info)
         }?;
+
+        associate_debug_name!(device, inner, debug_name);
 
         Ok(Self {
             parent: device.clone(),
@@ -1511,6 +1579,7 @@ impl GpuImageView {
     unsafe fn new(
         parent_image: &Arc<GpuImage>,
         ci: ImageViewCreateInfo,
+        debug_name: Option<String>,
     ) -> VkResult<Self> {
         let inner = unsafe {
             parent_image
@@ -1518,6 +1587,8 @@ impl GpuImageView {
                 .as_inner_ref()
                 .create_image_view(&ci, None)
         }?;
+
+        associate_debug_name!(parent_image.parent, inner, debug_name);
 
         Ok(Self {
             parent: parent_image.clone(),
@@ -1542,9 +1613,11 @@ impl TextureSampler {
     unsafe fn new(
         device: &Arc<Device>,
         sampler_ci: &SamplerCreateInfo,
+        debug_name: Option<String>,
     ) -> VkResult<Self> {
         let inner =
             unsafe { device.as_inner_ref().create_sampler(sampler_ci, None) }?;
+        associate_debug_name!(device, inner, debug_name);
         Ok(Self {
             parent: device.clone(),
             inner,

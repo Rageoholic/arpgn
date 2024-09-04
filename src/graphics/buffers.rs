@@ -4,7 +4,7 @@ use ash::{prelude::VkResult, vk::BufferCreateInfo};
 use bytemuck::{Pod, Zeroable};
 use vk_mem::{Alloc, AllocationCreateInfo as BufferAllocationCreateInfo};
 
-use super::Device;
+use super::{utils::associate_debug_name, Device};
 
 #[derive(Debug)]
 pub struct ManagedMappableBuffer<T> {
@@ -21,10 +21,12 @@ impl<T: Pod + Zeroable> ManagedMappableBuffer<T> {
         device: &Arc<Device>,
         ci: &BufferCreateInfo,
         ai: &BufferAllocationCreateInfo,
+        debug_name: Option<String>,
     ) -> VkResult<Self> {
         let (inner, allocation) =
             //SAFETY: Valid ci, valid ai
             unsafe { device.get_allocator_ref().create_buffer(ci, ai) }?;
+        associate_debug_name!(device, inner, debug_name);
 
         Ok(Self {
             parent: device.clone(),

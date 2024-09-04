@@ -5,7 +5,7 @@ use ash::{
     vk::RenderPassCreateInfo,
 };
 
-use super::device::Device;
+use super::{device::Device, utils::associate_debug_name};
 
 #[derive(Debug)]
 pub struct RenderPass {
@@ -29,10 +29,13 @@ impl RenderPass {
     pub unsafe fn new(
         device: &Arc<Device>,
         ci: &RenderPassCreateInfo,
+        debug_name: Option<String>,
     ) -> VkResult<Self> {
         let inner =
             //SAFETY: valid ci
             unsafe { device.as_inner_ref().create_render_pass(ci, None) }?;
+
+        associate_debug_name!(device, inner, debug_name);
 
         Ok(Self {
             inner,

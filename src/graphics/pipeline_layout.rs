@@ -9,6 +9,7 @@ use std::sync::Arc;
 use ash::prelude::VkResult;
 use ash::vk::{PipelineLayout as RawPipelineLayout, PipelineLayoutCreateInfo};
 
+use super::utils::associate_debug_name;
 use super::Device;
 
 #[derive(Debug)]
@@ -33,10 +34,12 @@ impl PipelineLayout {
     pub unsafe fn new(
         device: &Arc<Device>,
         ci: &PipelineLayoutCreateInfo,
+        debug_name: Option<String>,
     ) -> VkResult<Self> {
         let inner =
             // SAFETY: valid ci. Preconditions of this unsafe function
             unsafe { device.as_inner_ref().create_pipeline_layout(ci, None) }?;
+        associate_debug_name!(device, inner, debug_name);
         Ok(Self {
             inner,
             parent: device.clone(),
