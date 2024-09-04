@@ -15,16 +15,19 @@ use std::{fmt::Debug, sync::Arc};
 use ash::{
     prelude::VkResult,
     vk::{
-        ExtensionProperties, Handle, InstanceCreateInfo, PhysicalDevice,
-        PhysicalDeviceFeatures, PhysicalDeviceProperties,
-        QueueFamilyProperties,
+        DebugUtilsMessengerCreateInfoEXT, ExtensionProperties, Handle,
+        InstanceCreateInfo, PhysicalDevice, PhysicalDeviceFeatures,
+        PhysicalDeviceProperties, QueueFamilyProperties,
     },
     Entry,
 };
 
+use super::debug_messenger::DebugMessenger;
+
 pub(super) struct Instance {
     inner: ash::Instance,
     parent: Arc<Entry>,
+    debug: Option<DebugMessenger>,
 }
 
 impl Debug for Instance {
@@ -37,12 +40,16 @@ impl Debug for Instance {
 
 impl Drop for Instance {
     fn drop(&mut self) {
+        self.debug.take();
         //SAFETY: Last thing we do with the instance
         unsafe { self.inner.destroy_instance(None) };
     }
 }
 
 impl Instance {
+    pub fn is_debug(&self) -> bool {
+        self.debug.is_some()
+    }
     //SAFETY REQUIREMENTS: Must provide a valid ci
     pub(super) unsafe fn new(
         entry: &Arc<Entry>,
@@ -52,7 +59,14 @@ impl Instance {
         unsafe { entry.create_instance(ci, None) }.map(|inner| Self {
             inner,
             parent: entry.clone(),
+            debug: None,
         })
+    }
+    pub unsafe fn init_debug_messenger(
+        &mut self,
+        ci: &DebugUtilsMessengerCreateInfoEXT,
+    ) {
+        self.debug = unsafe { DebugMessenger::new(self, ci) }.ok();
     }
 
     pub(super) fn parent(&self) -> &Arc<Entry> {

@@ -21,8 +21,8 @@ use std::{
 use ash::{
     prelude::VkResult,
     vk::{
-        DeviceCreateInfo, Fence, Handle, PhysicalDevice, Queue,
-        Result as RawVkResult, SubmitInfo,
+        DebugUtilsObjectNameInfoEXT, DeviceCreateInfo, Fence, Handle,
+        PhysicalDevice, Queue, Result as RawVkResult, SubmitInfo,
     },
 };
 
@@ -34,6 +34,7 @@ pub struct Device {
     parent: Arc<super::Instance>,
     queue_families: HashMap<u32, Vec<Mutex<Queue>>>,
     allocator: ManuallyDrop<vk_mem::Allocator>,
+    debug_utils_device: Option<ash::ext::debug_utils::Device>,
 }
 
 impl Debug for Device {
@@ -51,8 +52,10 @@ impl Drop for Device {
     fn drop(&mut self) {
         //SAFETY: Last use of self.allocator
         unsafe { ManuallyDrop::drop(&mut self.allocator) };
+
         //SAFETY: Last use of device, all child objects have been destroyed
         //(other objects are responsible for that)
+
         unsafe { self.inner.destroy_device(None) };
     }
 }
@@ -63,6 +66,9 @@ pub enum QueueRetrievalError {
 }
 
 impl Device {
+    pub fn is_debug(&self) -> bool {
+        self.debug_utils_device.is_some()
+    }
     //SAFETY REQUIREMENTS: Valid ci and phys_dev derived from instance
     pub unsafe fn new(
         instance: &Arc<super::Instance>,
@@ -107,6 +113,9 @@ impl Device {
         let allocator =
             //SAFETY: Valid ci
             ManuallyDrop::new(unsafe { vk_mem::Allocator::new(allocator_ci) }?);
+        let debug_utils_device = instance.is_debug().then(|| {
+            ash::ext::debug_utils::Device::new(instance.as_inner_ref(), &inner)
+        });
 
         Ok(Self {
             inner,
@@ -114,6 +123,7 @@ impl Device {
             parent: instance.clone(),
             queue_families,
             allocator,
+            debug_utils_device,
         })
     }
 
@@ -175,6 +185,17 @@ impl Device {
     pub fn wait_idle(&self) -> VkResult<()> {
         //SAFETY: We basically know this is always safe
         unsafe { self.inner.device_wait_idle() }
+    }
+
+    pub fn associate_debug_name(
+        &self,
+        name_info: &DebugUtilsObjectNameInfoEXT,
+    ) {
+        unsafe {
+            self.debug_utils_device.as_ref().map(|debug| {
+                debug.set_debug_utils_object_name(name_info).unwrap()
+            })
+        };
     }
 }
 

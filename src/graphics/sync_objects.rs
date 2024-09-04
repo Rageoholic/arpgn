@@ -1,9 +1,14 @@
-use std::sync::Arc;
+use std::{ffi::CString, sync::Arc};
 
 use ash::{
     prelude::VkResult,
-    vk::{FenceCreateFlags, FenceCreateInfo, SemaphoreCreateInfo},
+    vk::{
+        DebugUtilsObjectNameInfoEXT, FenceCreateFlags, FenceCreateInfo,
+        SemaphoreCreateInfo,
+    },
 };
+
+use crate::graphics::utils::associate_debug_name;
 
 use super::Device;
 #[derive(Debug)]
@@ -24,13 +29,17 @@ impl Drop for Semaphore {
 }
 
 impl Semaphore {
-    pub fn new(device: &Arc<Device>) -> VkResult<Self> {
+    pub fn new(
+        device: &Arc<Device>,
+        debug_name: Option<String>,
+    ) -> VkResult<Self> {
         let ci = SemaphoreCreateInfo::default();
+        let inner =
+            unsafe { device.as_inner_ref().create_semaphore(&ci, None)? };
+
+        associate_debug_name!(device, inner, debug_name);
         Ok(Self {
-            //SAFETY: Valid ci
-            inner: unsafe {
-                device.as_inner_ref().create_semaphore(&ci, None)?
-            },
+            inner,
             parent: device.clone(),
         })
     }
@@ -53,11 +62,22 @@ impl Drop for Fence {
 }
 
 impl Fence {
-    pub fn new(device: &Arc<Device>) -> VkResult<Self> {
+    pub fn new(
+        device: &Arc<Device>,
+        debug_name: Option<String>,
+    ) -> VkResult<Self> {
         let ci = FenceCreateInfo::default().flags(FenceCreateFlags::SIGNALED);
+        let inner = unsafe { device.as_inner_ref().create_fence(&ci, None)? };
+        if device.is_debug() && debug_name.is_some() {
+            let debug_name = CString::new(debug_name.unwrap()).unwrap();
+            let name_info = DebugUtilsObjectNameInfoEXT::default()
+                .object_handle(inner)
+                .object_name(&debug_name);
+            device.associate_debug_name(&name_info);
+        }
         Ok(Self {
             //SAFETY: Valid ci
-            inner: unsafe { device.as_inner_ref().create_fence(&ci, None)? },
+            inner,
             parent: device.clone(),
         })
     }

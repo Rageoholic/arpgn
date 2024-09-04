@@ -50,7 +50,6 @@ use ash::{
 };
 use buffers::ManagedMappableBuffer;
 use command_buffers::CommandPool;
-use debug_messenger::DebugMessenger;
 use descriptor_sets::{DescriptorPool, DescriptorSet, DescriptorSetLayout};
 use device::Device;
 use instance::Instance;
@@ -65,6 +64,7 @@ use strum::EnumString;
 use surface::Surface;
 use swapchain::Swapchain;
 use sync_objects::{Fence, Semaphore};
+use utils::debug_label;
 use vek::{Mat4, Vec2, Vec3};
 use vk_mem::{Alloc, AllocationCreateFlags};
 use winit::{
@@ -91,6 +91,7 @@ mod shader_module;
 mod surface;
 mod swapchain;
 mod sync_objects;
+mod utils;
 
 const MAX_FRAMES_IN_FLIGHT: u32 = 2;
 
@@ -181,7 +182,7 @@ impl Drop for Context {
 pub struct Context {
     win: Arc<Window>,
     _instance: Arc<Instance>,
-    _debug_messenger: Option<DebugMessenger>,
+
     surface_derived: Option<SurfaceDerived>,
     command_buffers: Vec<command_buffers::CommandBuffer>,
     uniform_descriptor_sets: Vec<DescriptorSet>,
@@ -250,6 +251,7 @@ impl SurfaceDerived {
                     present_queue_index,
                     graphics_queue_index,
                     old_swapchain,
+                    debug_label!(device, "Main Swapchain"),
                 )
             }
             .map_err(|_| SwapchainCreation)?,
@@ -567,22 +569,20 @@ impl Context {
             instance_create_info =
                 instance_create_info.push_next(&mut debug_utils_messenger_ci);
         }
-        let instance = Arc::new(
-            //SAFETY: Valid ci. We know because we made it and none of the lifetimes
-            //involved have expired
+        //SAFETY: Valid ci. We know because we made it and none of the lifetimes
+        //involved have expired
+        let mut instance =
             unsafe { Instance::new(&entry, &instance_create_info) }
-                .map_err(|_| InstanceCreation)?,
-        );
+                .map_err(|_| InstanceCreation)?;
 
-        let _debug_messenger = if opts.graphics_validation_layers
-            != ValidationLevel::None
-        {
+        if opts.graphics_validation_layers != ValidationLevel::None {
             //SAFETY: Valid ci. We know cause we made it
-            unsafe { DebugMessenger::new(&instance, &debug_utils_messenger_ci) }
-                .ok()
-        } else {
-            None
-        };
+            unsafe {
+                instance.init_debug_messenger(&debug_utils_messenger_ci);
+            }
+        }
+
+        let instance = Arc::new(instance);
 
         let win = Arc::new(
             event_loop
@@ -643,6 +643,7 @@ impl Context {
             //isn't necessary but it's like. 2 values in the struct that would
             //have to be zeroed anyways. Who cares.
             .enabled_layer_names(&layer_names);
+
         let device = Arc::new(
             //SAFETY: valid ci and phys_dev is derived from instance. We
             //accomplished these
@@ -778,7 +779,8 @@ impl Context {
             Vec::with_capacity(MAX_FRAMES_IN_FLIGHT as usize);
         let mut render_complete_semaphores =
             Vec::with_capacity(MAX_FRAMES_IN_FLIGHT as usize);
-        let mut fences = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT as usize);
+        let mut render_ready_fences =
+            Vec::with_capacity(MAX_FRAMES_IN_FLIGHT as usize);
 
         let vertex_buffer_ci = BufferCreateInfo::default()
             .sharing_mode(SharingMode::EXCLUSIVE)
@@ -821,7 +823,7 @@ impl Context {
             ..Default::default()
         };
 
-        for _ in 0..MAX_FRAMES_IN_FLIGHT {
+        for i in 0..MAX_FRAMES_IN_FLIGHT {
             vertex_buffers.push(
                 //SAFETY: valid ci and ai
                 unsafe {
@@ -855,9 +857,27 @@ impl Context {
                 }
                 .unwrap(),
             );
-            image_available_semaphores.push(Semaphore::new(&device).unwrap());
-            render_complete_semaphores.push(Semaphore::new(&device).unwrap());
-            fences.push(Fence::new(&device).unwrap());
+            image_available_semaphores.push(
+                Semaphore::new(
+                    &device,
+                    debug_label!(device, "image_available_semaphore [{}]", i),
+                )
+                .unwrap(),
+            );
+            render_complete_semaphores.push(
+                Semaphore::new(
+                    &device,
+                    debug_label!(device, "render_complete_semaphore [{}]", i),
+                )
+                .unwrap(),
+            );
+            render_ready_fences.push(
+                Fence::new(
+                    &device,
+                    debug_label!(device, "render_ready_fence [{}]", i),
+                )
+                .unwrap(),
+            );
         }
 
         let image_buffer = image::open("res/texture.png")
@@ -1083,7 +1103,6 @@ impl Context {
             command_buffers,
             uniform_descriptor_sets: descriptor_sets,
             _instance: instance,
-            _debug_messenger,
             surface_derived: Some(SurfaceDerived::new(
                 &device,
                 Arc::new(surface),
@@ -1100,7 +1119,7 @@ impl Context {
             index_buffers,
             image_available_semaphores,
             render_complete_semaphores,
-            prev_frame_finished_fences: fences,
+            prev_frame_finished_fences: render_ready_fences,
             pipeline_layout,
             device,
             vert_shader_mod,

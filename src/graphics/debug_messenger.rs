@@ -5,10 +5,7 @@
 
 // * We must hold an Arc to our parent instance
 
-use std::{
-    ffi::{c_void, CStr},
-    sync::Arc,
-};
+use std::ffi::{c_void, CStr};
 
 use ash::{
     ext::debug_utils,
@@ -24,14 +21,12 @@ use super::Instance;
 
 pub(super) struct DebugMessenger {
     inner: DebugUtilsMessengerEXT,
-    _parent: Arc<Instance>,
     instance: debug_utils::Instance,
 }
 impl std::fmt::Debug for DebugMessenger {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DebugMessenger")
             .field("inner", &self.inner)
-            .field("parent", &self._parent)
             .finish_non_exhaustive()
     }
 }
@@ -49,7 +44,7 @@ impl Drop for DebugMessenger {
 impl DebugMessenger {
     //SAFETY REQUIREMENTS: Valid ci
     pub(super) unsafe fn new(
-        parent_instance: &Arc<Instance>,
+        parent_instance: &Instance,
         ci: &DebugUtilsMessengerCreateInfoEXT,
     ) -> VkResult<Self> {
         let debug_utils_instance = debug_utils::Instance::new(
@@ -60,7 +55,6 @@ impl DebugMessenger {
         unsafe { debug_utils_instance.create_debug_utils_messenger(ci, None) }
             .map(|inner| Self {
                 inner,
-                _parent: parent_instance.clone(),
                 instance: debug_utils_instance,
             })
     }

@@ -23,6 +23,7 @@ use super::{
     device::Device,
     render_pass::RenderPass,
     sync_objects::{self, Semaphore},
+    utils::associate_debug_name,
     Surface,
 };
 
@@ -58,6 +59,7 @@ impl Swapchain {
         graphics_qfi: u32,
         present_qfi: u32,
         old_swapchain: Option<&Arc<Self>>,
+        debug_name: Option<String>,
     ) -> VkResult<Self> {
         //SAFETY: surface and device are created from the same instance
         let swap_info = unsafe {
@@ -151,6 +153,8 @@ impl Swapchain {
 
         //SAFETY: Valid ci. Known because we did it
         let inner = unsafe { swapchain_device.create_swapchain(&ci, None) }?;
+        let dn = debug_name.clone();
+        associate_debug_name!(device, inner, dn);
 
         let swapchain_images =
             //SAFETY: Should always be good
@@ -159,7 +163,7 @@ impl Swapchain {
 
         let mut image_views = Vec::with_capacity(swapchain_images.len());
 
-        for image in swapchain_images {
+        for (i, image) in swapchain_images.into_iter().enumerate() {
             let components = ComponentMapping::default();
             let subresource_range = ImageSubresourceRange::default()
                 .aspect_mask(ImageAspectFlags::COLOR)
@@ -180,6 +184,12 @@ impl Swapchain {
                     .create_image_view(&image_view_ci, None)
             }
             .unwrap();
+
+            let iv_debug_name = debug_name
+                .as_ref()
+                .map(|dn| format!("{} image view {}", dn, i));
+
+            associate_debug_name!(device, image_view, iv_debug_name);
 
             image_views.push(image_view);
         }
