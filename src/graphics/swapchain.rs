@@ -290,9 +290,6 @@ impl Swapchain {
             )
         }
     }
-    pub fn name_surface(&self, device: Device, debug_name: Option<String>) {
-        associate_debug_name!(device, self.inner, debug_name);
-    }
 }
 
 impl Drop for Swapchain {

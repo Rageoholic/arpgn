@@ -1257,6 +1257,7 @@ impl Context {
                     0.1,
                     10.0,
                 );
+
                 //Need to invert the projection matrix in order to flip the y
                 //axis properly without influencing other coords. Also turns it
                 //into a right hand coordinate space which is what I want.
