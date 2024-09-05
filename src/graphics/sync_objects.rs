@@ -64,9 +64,14 @@ impl Drop for Fence {
 impl Fence {
     pub fn new(
         device: &Arc<Device>,
+        signaled: bool,
         debug_name: Option<String>,
     ) -> VkResult<Self> {
-        let ci = FenceCreateInfo::default().flags(FenceCreateFlags::SIGNALED);
+        let ci = FenceCreateInfo::default().flags(if signaled {
+            FenceCreateFlags::SIGNALED
+        } else {
+            FenceCreateFlags::empty()
+        });
         let inner = unsafe { device.as_inner_ref().create_fence(&ci, None)? };
         if device.is_debug() && debug_name.is_some() {
             let debug_name = CString::new(debug_name.unwrap()).unwrap();

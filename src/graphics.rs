@@ -14,8 +14,8 @@ use std::{
 use ash::{
     prelude::VkResult,
     vk::{
-        api_version_major, api_version_minor, api_version_patch, AccessFlags,
-        ApplicationInfo, AttachmentDescription, AttachmentLoadOp,
+        self, api_version_major, api_version_minor, api_version_patch,
+        AccessFlags, ApplicationInfo, AttachmentDescription, AttachmentLoadOp,
         AttachmentReference, AttachmentStoreOp, BlendFactor, BorderColor,
         BufferCreateInfo, BufferImageCopy, BufferUsageFlags, ClearColorValue,
         ClearValue, ColorComponentFlags, CommandBufferBeginInfo,
@@ -28,11 +28,12 @@ use ash::{
         DescriptorSetLayoutBinding, DescriptorSetLayoutCreateInfo,
         DescriptorType, DeviceCreateInfo, DeviceQueueCreateInfo, Extent3D,
         Filter, Format, FrontFace, GraphicsPipelineCreateInfo,
-        ImageAspectFlags, ImageCreateInfo, ImageLayout, ImageMemoryBarrier,
-        ImageSubresourceLayers, ImageSubresourceRange, ImageTiling, ImageType,
-        ImageUsageFlags, ImageView, ImageViewCreateInfo, ImageViewType,
-        IndexType, InstanceCreateInfo, LogicOp, MemoryPropertyFlags, Offset3D,
-        PhysicalDevice, PhysicalDeviceType, PipelineBindPoint,
+        ImageAspectFlags, ImageBlit, ImageCreateInfo, ImageLayout,
+        ImageMemoryBarrier, ImageSubresourceLayers, ImageSubresourceRange,
+        ImageTiling, ImageType, ImageUsageFlags, ImageView,
+        ImageViewCreateInfo, ImageViewType, IndexType, InstanceCreateInfo,
+        LogicOp, MemoryPropertyFlags, Offset3D, PhysicalDevice,
+        PhysicalDeviceType, PipelineBindPoint,
         PipelineColorBlendAttachmentState, PipelineColorBlendStateCreateInfo,
         PipelineInputAssemblyStateCreateInfo, PipelineLayoutCreateInfo,
         PipelineMultisampleStateCreateInfo,
@@ -49,7 +50,7 @@ use ash::{
     LoadingError,
 };
 use buffers::ManagedMappableBuffer;
-use command_buffers::CommandPool;
+use command_buffers::{CommandBuffer, CommandPool};
 use descriptor_sets::{DescriptorPool, DescriptorSet, DescriptorSetLayout};
 use device::Device;
 use instance::Instance;
@@ -630,12 +631,19 @@ impl Context {
                 }
             })
             .ok_or(NoSuitableDevice)?;
+        let graphics_queue_index = scored_phys_dev.graphics_queue_index;
+        let present_queue_index = scored_phys_dev.present_queue_index;
+        let transfer_queue_index = scored_phys_dev.transfer_queue_index;
+
+        log::warn!("Graphics queue index: {}", graphics_queue_index);
+        log::warn!("Transfer queue index: {}", transfer_queue_index);
+        log::warn!("Present queue index: {}", present_queue_index);
         //TODO: Properly check for these extensions
         let device_extension_names = vec![ash::khr::swapchain::NAME.as_ptr()];
         let mut queue_family_indices = HashSet::with_capacity(3);
-        queue_family_indices.insert(scored_phys_dev.present_queue_index);
-        queue_family_indices.insert(scored_phys_dev.graphics_queue_index);
-        queue_family_indices.insert(scored_phys_dev.transfer_queue_index);
+        queue_family_indices.insert(present_queue_index);
+        queue_family_indices.insert(graphics_queue_index);
+        queue_family_indices.insert(transfer_queue_index);
         let queue_create_infos: Vec<_> = queue_family_indices
             .iter()
             .map(|qfi| {
@@ -784,7 +792,7 @@ impl Context {
                     )
                 })?;
         let command_pool_ci = CommandPoolCreateInfo::default()
-            .queue_family_index(scored_phys_dev.graphics_queue_index)
+            .queue_family_index(graphics_queue_index)
             .flags(CommandPoolCreateFlags::RESET_COMMAND_BUFFER);
         let command_pool = Rc::new(
             //SAFETY: Valid ci
@@ -816,7 +824,7 @@ impl Context {
             Vec::with_capacity(MAX_FRAMES_IN_FLIGHT as usize);
         let mut render_complete_semaphores =
             Vec::with_capacity(MAX_FRAMES_IN_FLIGHT as usize);
-        let mut render_ready_fences =
+        let mut prev_render_complete_fence =
             Vec::with_capacity(MAX_FRAMES_IN_FLIGHT as usize);
 
         let vertex_buffer_ci = BufferCreateInfo::default()
@@ -911,20 +919,18 @@ impl Context {
                 )
                 .unwrap(),
             );
-            render_ready_fences.push(
+            prev_render_complete_fence.push(
                 Fence::new(
                     &device,
-                    debug_name!(device, "render_ready_fence [{}]", i),
+                    true,
+                    debug_name!(device, "prev_render_complete_fence [{}]", i),
                 )
                 .unwrap(),
             );
         }
 
-        let image_buffer = image::open("res/texture.png")
-            .map_err(|_| MissingTexture)?
-            .into_rgba8();
         let transfer_command_pool_ci = CommandPoolCreateInfo::default()
-            .queue_family_index(scored_phys_dev.transfer_queue_index)
+            .queue_family_index(transfer_queue_index)
             .flags(CommandPoolCreateFlags::TRANSIENT);
         //SAFETY: valid cis
         let transfer_command_pool = Rc::new(
@@ -937,162 +943,27 @@ impl Context {
             }
             .unwrap(),
         );
-
-        let staging_buffer_ci = BufferCreateInfo::default()
-            .usage(BufferUsageFlags::TRANSFER_SRC)
-            .size(size_of_val(image_buffer.as_raw().deref()) as u64)
-            .sharing_mode(SharingMode::EXCLUSIVE);
-
-        let staging_buffer_ai = vk_mem::AllocationCreateInfo {
-            flags: AllocationCreateFlags::MAPPED
-                | AllocationCreateFlags::HOST_ACCESS_SEQUENTIAL_WRITE,
-            usage: vk_mem::MemoryUsage::AutoPreferHost,
-            required_flags: MemoryPropertyFlags::HOST_VISIBLE,
-            preferred_flags: MemoryPropertyFlags::HOST_COHERENT,
-            ..Default::default()
-        };
-
-        //SAFETY: Valid ci and ai
-        let staging_buffer: ManagedMappableBuffer<u8> = unsafe {
-            ManagedMappableBuffer::new(
-                &device,
-                &staging_buffer_ci,
-                &staging_buffer_ai,
-                debug_name!(device, "Staging buffer"),
-            )
-        }
+        let (gpu_image, gpu_waitable) = GpuImage::from_file(
+            "res/texture.png",
+            &device,
+            &transfer_command_pool,
+            &command_pool,
+            transfer_queue_index,
+            graphics_queue_index,
+        )
         .unwrap();
-
-        let raw_image = image_buffer.as_raw();
-
-        staging_buffer.upload_data(raw_image.as_ref());
-
-        let mut image_transfer_command_buffer = transfer_command_pool
-            .alloc_command_buffer(CommandBufferLevel::PRIMARY)
-            .unwrap();
-
-        let image_create_info = ImageCreateInfo::default()
-            .image_type(ImageType::TYPE_2D)
-            .extent(Extent3D {
-                width: image_buffer.width(),
-                height: image_buffer.height(),
-                depth: 1,
-            })
-            .mip_levels(1)
-            .array_layers(1)
-            .format(Format::R8G8B8A8_SRGB)
-            .tiling(ImageTiling::OPTIMAL)
-            .initial_layout(ImageLayout::UNDEFINED)
-            .usage(ImageUsageFlags::SAMPLED | ImageUsageFlags::TRANSFER_DST)
-            .sharing_mode(SharingMode::EXCLUSIVE)
-            .samples(SampleCountFlags::TYPE_1);
-        let image_allocation_info = vk_mem::AllocationCreateInfo {
-            usage: vk_mem::MemoryUsage::AutoPreferDevice,
-            ..Default::default()
-        };
-        //SAFETY: Valid cis
-        let gpu_image = unsafe {
-            GpuImage::new(
-                &device,
-                &image_create_info,
-                &image_allocation_info,
-                debug_name!(device, "Texture Image"),
-            )
-        }
-        .unwrap();
-        let subresource = ImageSubresourceRange::default()
+        let image_subresource_range = ImageSubresourceRange::default()
             .aspect_mask(ImageAspectFlags::COLOR)
             .base_mip_level(0)
-            .level_count(1)
+            .level_count((gpu_image.mip_levels - 1).max(1))
             .base_array_layer(0)
             .layer_count(1);
-        let image_transfer_begin_info = CommandBufferBeginInfo::default()
-            .flags(CommandBufferUsageFlags::ONE_TIME_SUBMIT);
-        let image_transition_pre_transfer_barrier =
-            ImageMemoryBarrier::default()
-                .old_layout(ImageLayout::UNDEFINED)
-                .new_layout(ImageLayout::TRANSFER_DST_OPTIMAL)
-                .src_queue_family_index(QUEUE_FAMILY_IGNORED)
-                .dst_queue_family_index(QUEUE_FAMILY_IGNORED)
-                .image(gpu_image.inner)
-                .subresource_range(subresource)
-                .src_access_mask(AccessFlags::empty())
-                .dst_access_mask(AccessFlags::TRANSFER_WRITE);
-        let image_transition_post_transfer_barrier =
-            ImageMemoryBarrier::default()
-                .old_layout(ImageLayout::TRANSFER_DST_OPTIMAL)
-                .new_layout(ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .src_queue_family_index(scored_phys_dev.transfer_queue_index)
-                .dst_queue_family_index(scored_phys_dev.graphics_queue_index)
-                .image(gpu_image.inner)
-                .subresource_range(subresource)
-                .src_access_mask(AccessFlags::TRANSFER_WRITE)
-                .dst_access_mask(AccessFlags::SHADER_READ);
-        let image_subresource = ImageSubresourceLayers::default()
-            .aspect_mask(ImageAspectFlags::COLOR)
-            .mip_level(0)
-            .base_array_layer(0)
-            .layer_count(1);
-        let regions = &[BufferImageCopy::default()
-            .buffer_offset(0)
-            .buffer_row_length(0)
-            .buffer_image_height(0)
-            .image_subresource(image_subresource)
-            .image_offset(Offset3D { x: 0, y: 0, z: 0 })
-            .image_extent(Extent3D {
-                width: image_buffer.width(),
-                height: image_buffer.height(),
-                depth: 1,
-            })];
-        image_transfer_command_buffer
-            .record_and_submit(
-                scored_phys_dev.transfer_queue_index,
-                0,
-                &[],
-                &[],
-                &[],
-                &image_transfer_begin_info,
-                ash::vk::Fence::null(),
-                |dev, cb| -> Result<(), ash::vk::Result> {
-                    //SAFETY: cb and all parameters are from the same device
-                    unsafe {
-                        dev.cmd_pipeline_barrier(
-                            cb,
-                            PipelineStageFlags::TOP_OF_PIPE,
-                            PipelineStageFlags::TRANSFER,
-                            DependencyFlags::empty(),
-                            &[],
-                            &[],
-                            &[image_transition_pre_transfer_barrier],
-                        );
-                        dev.cmd_copy_buffer_to_image(
-                            cb,
-                            staging_buffer.get_inner(),
-                            gpu_image.inner,
-                            ImageLayout::TRANSFER_DST_OPTIMAL,
-                            regions,
-                        );
-                        dev.cmd_pipeline_barrier(
-                            cb,
-                            PipelineStageFlags::TRANSFER,
-                            PipelineStageFlags::FRAGMENT_SHADER,
-                            DependencyFlags::empty(),
-                            &[],
-                            &[],
-                            &[image_transition_post_transfer_barrier],
-                        );
-                        Ok(())
-                    }
-                },
-            )
-            .unwrap();
-
         let gpu_image = Arc::new(gpu_image);
         let image_view_ci = ImageViewCreateInfo::default()
             .image(gpu_image.inner)
             .view_type(ImageViewType::TYPE_2D)
             .format(Format::R8G8B8A8_SRGB)
-            .subresource_range(subresource);
+            .subresource_range(image_subresource_range);
 
         let gpu_image_view = unsafe {
             GpuImageView::new(
@@ -1127,7 +998,6 @@ impl Context {
             )
         }
         .unwrap();
-        device.wait_idle().unwrap();
 
         for (i, descriptor_set) in descriptor_sets.iter_mut().enumerate() {
             let buffer_infos = &[DescriptorBufferInfo::default()
@@ -1162,6 +1032,15 @@ impl Context {
             };
         }
 
+        let fences: Vec<_> = gpu_waitable.get_fences().collect();
+
+        unsafe {
+            device
+                .as_inner_ref()
+                .wait_for_fences(&fences, true, u64::MAX)
+        }
+        .unwrap();
+
         Ok(Context {
             sync_index: 0,
             win,
@@ -1171,20 +1050,20 @@ impl Context {
             surface_derived: Some(SurfaceDerived::new(
                 &device,
                 Arc::new(surface),
-                scored_phys_dev.graphics_queue_index,
-                scored_phys_dev.present_queue_index,
+                graphics_queue_index,
+                present_queue_index,
                 &[&vert_shader_mod, &frag_shader_mod],
                 &pipeline_layout,
                 None,
             )?),
-            graphics_queue_index: scored_phys_dev.graphics_queue_index,
-            present_queue_index: scored_phys_dev.present_queue_index,
+            graphics_queue_index,
+            present_queue_index,
             vertex_buffers,
             uniform_buffers,
             index_buffers,
             image_available_semaphores,
             render_complete_semaphores,
-            prev_frame_finished_fences: render_ready_fences,
+            prev_frame_finished_fences: prev_render_complete_fence,
             pipeline_layout,
             device,
             vert_shader_mod,
@@ -1447,7 +1326,9 @@ unsafe fn evaluate_physical_device(
         .enumerate()
         .find(|(_qfi, props)| {
             props.queue_flags.contains(QueueFlags::TRANSFER)
-                && (!props.queue_flags & !QueueFlags::TRANSFER).is_empty()
+                && !(props
+                    .queue_flags
+                    .contains(QueueFlags::GRAPHICS | QueueFlags::COMPUTE))
         })
         .map(|(i, _props)| i as u32)
         .or(graphics_queue_index);
@@ -1520,8 +1401,396 @@ struct GpuImage {
     inner: ash::vk::Image,
     parent: Arc<Device>,
     allocation: vk_mem::Allocation,
+    mip_levels: u32,
+}
+
+trait FenceProducer {
+    type Iter: Iterator<Item = ash::vk::Fence>;
+    fn get_fences(&self) -> Self::Iter;
+}
+#[derive(Debug, thiserror::Error)]
+enum LoadTextureFromFileError {
+    #[error("Attempted to load invalid file")]
+    InvalidTextureFile,
+    #[error("Error submitting command buffer")]
+    GpuUploadError,
+    #[error("File does not exist")]
+    NoSuchFile,
+    #[error("Could not generate mipmaps")]
+    MipmapGenerationError,
 }
 impl GpuImage {
+    fn from_file(
+        path: impl AsRef<Path> + Clone,
+        device: &Arc<Device>,
+        transfer_command_pool: &Rc<CommandPool>,
+        graphics_command_pool: &Rc<CommandPool>,
+        transfer_queue_index: u32,
+        graphics_queue_index: u32,
+    ) -> Result<(Self, impl FenceProducer), LoadTextureFromFileError> {
+        let image_file = std::io::BufReader::new(
+            std::fs::File::open(path.clone())
+                .map_err(|_| LoadTextureFromFileError::NoSuchFile)?,
+        );
+        let image_buffer = image::load(image_file, image::ImageFormat::Png)
+            .map_err(|_| LoadTextureFromFileError::InvalidTextureFile)?
+            .into_rgba8();
+
+        let staging_buffer_ci = BufferCreateInfo::default()
+            .usage(BufferUsageFlags::TRANSFER_SRC)
+            .size(size_of_val(image_buffer.as_raw().deref()) as u64)
+            .sharing_mode(SharingMode::EXCLUSIVE);
+
+        let staging_buffer_ai = vk_mem::AllocationCreateInfo {
+            flags: AllocationCreateFlags::MAPPED
+                | AllocationCreateFlags::HOST_ACCESS_SEQUENTIAL_WRITE,
+            usage: vk_mem::MemoryUsage::AutoPreferHost,
+            required_flags: MemoryPropertyFlags::HOST_VISIBLE,
+            preferred_flags: MemoryPropertyFlags::HOST_COHERENT,
+            ..Default::default()
+        };
+
+        //SAFETY: Valid ci and ai
+        let staging_buffer: ManagedMappableBuffer<u8> = unsafe {
+            ManagedMappableBuffer::new(
+                device,
+                &staging_buffer_ci,
+                &staging_buffer_ai,
+                debug_name!(device, "Staging buffer"),
+            )
+        }
+        .unwrap();
+
+        let raw_image = image_buffer.as_raw();
+
+        staging_buffer.upload_data(raw_image.as_ref());
+
+        let mut image_transfer_command_buffer = transfer_command_pool
+            .alloc_command_buffer(CommandBufferLevel::PRIMARY)
+            .unwrap();
+
+        //Convenient zero cast way to get a log2
+        let mip_levels = (image_buffer.width().max(image_buffer.height())
+            as f32)
+            .log2() as u32
+            + 1;
+
+        let image_create_info = ImageCreateInfo::default()
+            .image_type(ImageType::TYPE_2D)
+            .extent(Extent3D {
+                width: image_buffer.width(),
+                height: image_buffer.height(),
+                depth: 1,
+            })
+            .mip_levels(mip_levels)
+            .array_layers(1)
+            .format(Format::R8G8B8A8_SRGB)
+            .tiling(ImageTiling::OPTIMAL)
+            .initial_layout(ImageLayout::UNDEFINED)
+            .usage(
+                ImageUsageFlags::SAMPLED
+                    | ImageUsageFlags::TRANSFER_DST
+                    | ImageUsageFlags::TRANSFER_SRC,
+            )
+            .sharing_mode(SharingMode::EXCLUSIVE)
+            .samples(SampleCountFlags::TYPE_1);
+        let image_allocation_info = vk_mem::AllocationCreateInfo {
+            usage: vk_mem::MemoryUsage::AutoPreferDevice,
+            ..Default::default()
+        };
+
+        //SAFETY: Valid cis
+        let gpu_image = unsafe {
+            GpuImage::new(
+                device,
+                &image_create_info,
+                &image_allocation_info,
+                debug_name!(device, "Texture Image"),
+            )
+        }
+        .unwrap();
+        let base_level_subresource_range = ImageSubresourceRange::default()
+            .aspect_mask(ImageAspectFlags::COLOR)
+            .base_mip_level(0)
+            .level_count(mip_levels)
+            .base_array_layer(0)
+            .layer_count(1);
+        let image_transfer_begin_info = CommandBufferBeginInfo::default()
+            .flags(CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+        let image_pre_load_barrier = ImageMemoryBarrier::default()
+            .old_layout(ImageLayout::UNDEFINED)
+            .new_layout(ImageLayout::TRANSFER_DST_OPTIMAL)
+            .src_queue_family_index(QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(QUEUE_FAMILY_IGNORED)
+            .image(gpu_image.inner)
+            .subresource_range(base_level_subresource_range)
+            .src_access_mask(AccessFlags::empty())
+            .dst_access_mask(AccessFlags::TRANSFER_WRITE);
+        let image_post_load_barrier = ImageMemoryBarrier::default()
+            .image(gpu_image.inner)
+            .old_layout(ImageLayout::TRANSFER_DST_OPTIMAL)
+            .new_layout(ImageLayout::TRANSFER_SRC_OPTIMAL)
+            .src_queue_family_index(transfer_queue_index)
+            .dst_queue_family_index(graphics_queue_index)
+            .subresource_range(base_level_subresource_range)
+            .src_access_mask(AccessFlags::TRANSFER_WRITE)
+            .dst_access_mask(AccessFlags::TRANSFER_READ);
+
+        let image_subresource_layers = ImageSubresourceLayers::default()
+            .aspect_mask(ImageAspectFlags::COLOR)
+            .mip_level(0)
+            .base_array_layer(0)
+            .layer_count(1);
+        let regions = &[BufferImageCopy::default()
+            .buffer_offset(0)
+            .buffer_row_length(0)
+            .buffer_image_height(0)
+            .image_subresource(image_subresource_layers)
+            .image_offset(Offset3D { x: 0, y: 0, z: 0 })
+            .image_extent(Extent3D {
+                width: image_buffer.width(),
+                height: image_buffer.height(),
+                depth: 1,
+            })];
+
+        let texture_ready_fence = Fence::new(
+            device,
+            false,
+            debug_name!(device, "Texture Ready Fence"),
+        )
+        .unwrap();
+
+        let transfer_complete_semaphore = Semaphore::new(
+            device,
+            debug_name!(
+                device,
+                "Texture Transfer Complete Semaphore For {:?}",
+                path.clone().as_ref().to_str().unwrap()
+            ),
+        )
+        .unwrap();
+
+        let mut mipmap_generate_command_buffer = graphics_command_pool
+            .alloc_command_buffer(CommandBufferLevel::PRIMARY)
+            .unwrap();
+
+        image_transfer_command_buffer
+            .record_and_submit(
+                transfer_queue_index,
+                0,
+                &[],
+                &[],
+                &[transfer_complete_semaphore.get_inner()],
+                &image_transfer_begin_info,
+                ash::vk::Fence::null(),
+                |dev, cb| -> Result<(), ash::vk::Result> {
+                    //SAFETY: cb and all parameters are from the same device
+
+                    unsafe {
+                        dev.cmd_pipeline_barrier(
+                            cb,
+                            PipelineStageFlags::TOP_OF_PIPE,
+                            PipelineStageFlags::TRANSFER,
+                            DependencyFlags::empty(),
+                            &[],
+                            &[],
+                            &[image_pre_load_barrier],
+                        );
+                        dev.cmd_copy_buffer_to_image(
+                            cb,
+                            staging_buffer.get_inner(),
+                            gpu_image.inner,
+                            ImageLayout::TRANSFER_DST_OPTIMAL,
+                            regions,
+                        );
+                        dev.cmd_pipeline_barrier(
+                            cb,
+                            PipelineStageFlags::TRANSFER,
+                            PipelineStageFlags::TRANSFER,
+                            DependencyFlags::empty(),
+                            &[],
+                            &[],
+                            &[image_post_load_barrier],
+                        );
+                    };
+
+                    Ok(())
+                },
+            )
+            .map_err(|_| LoadTextureFromFileError::GpuUploadError)?;
+        let generate_mipmaps_begin_info = CommandBufferBeginInfo::default()
+            .flags(CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+        mipmap_generate_command_buffer
+            .record_and_submit(
+                graphics_queue_index,
+                0,
+                &[transfer_complete_semaphore.get_inner()],
+                &[PipelineStageFlags::TRANSFER],
+                &[],
+                &generate_mipmaps_begin_info,
+                texture_ready_fence.get_inner(),
+                |dev, cb| -> Result<(), ash::vk::Result> {
+                    let mut prev_level_preblit_barrier = None;
+                    let mut image_barriers = Vec::with_capacity(2);
+                    for mip_level in 1..mip_levels {
+                        let prev_level = mip_level - 1;
+
+                        let current_level_range =
+                            ImageSubresourceRange::default()
+                                .aspect_mask(ImageAspectFlags::COLOR)
+                                .base_array_layer(0)
+                                .layer_count(1)
+                                .level_count(1)
+                                .base_mip_level(mip_level);
+
+                        let current_layer_preblit_barrier =
+                            ImageMemoryBarrier::default()
+                                .image(gpu_image.inner)
+                                .src_queue_family_index(QUEUE_FAMILY_IGNORED)
+                                .dst_queue_family_index(QUEUE_FAMILY_IGNORED)
+                                .old_layout(ImageLayout::UNDEFINED)
+                                .new_layout(ImageLayout::TRANSFER_DST_OPTIMAL)
+                                .src_access_mask(AccessFlags::empty())
+                                .dst_access_mask(AccessFlags::TRANSFER_WRITE)
+                                .subresource_range(current_level_range);
+
+                        image_barriers.clear();
+                        image_barriers.push(current_layer_preblit_barrier);
+                        if let Some(b) = prev_level_preblit_barrier {
+                            image_barriers.push(b)
+                        }
+
+                        let prev_level_layer =
+                            ImageSubresourceLayers::default()
+                                .aspect_mask(ImageAspectFlags::COLOR)
+                                .mip_level(mip_level - 1)
+                                .base_array_layer(0)
+                                .layer_count(1);
+                        let mip_level_layer = ImageSubresourceLayers::default()
+                            .aspect_mask(ImageAspectFlags::COLOR)
+                            .mip_level(mip_level)
+                            .base_array_layer(0)
+                            .layer_count(1);
+                        let prev_level_width =
+                            image_buffer.width() / 2u32.pow(prev_level);
+                        let prev_level_height =
+                            image_buffer.height() / 2u32.pow(prev_level);
+
+                        let mip_level_height = (image_buffer.height()
+                            / 2_u32.pow(mip_level))
+                        .max(1);
+                        let mip_level_width =
+                            (image_buffer.width() / 2u32.pow(mip_level)).max(1);
+                        let blit_info = ImageBlit::default()
+                            .src_offsets([
+                                Offset3D { x: 0, y: 0, z: 0 },
+                                Offset3D {
+                                    x: prev_level_width as i32,
+                                    y: prev_level_height as i32,
+                                    z: 1,
+                                },
+                            ])
+                            .src_subresource(prev_level_layer)
+                            .dst_offsets([
+                                Offset3D { x: 0, y: 0, z: 0 },
+                                Offset3D {
+                                    x: mip_level_width as i32,
+                                    y: mip_level_height as i32,
+                                    z: 1,
+                                },
+                            ])
+                            .dst_subresource(mip_level_layer);
+                        unsafe {
+                            dev.cmd_pipeline_barrier(
+                                cb,
+                                PipelineStageFlags::TRANSFER,
+                                PipelineStageFlags::TRANSFER,
+                                DependencyFlags::empty(),
+                                &[],
+                                &[],
+                                &image_barriers,
+                            );
+                            dev.cmd_blit_image(
+                                cb,
+                                gpu_image.inner,
+                                ImageLayout::TRANSFER_SRC_OPTIMAL,
+                                gpu_image.inner,
+                                ImageLayout::TRANSFER_DST_OPTIMAL,
+                                &[blit_info],
+                                vk::Filter::LINEAR,
+                            );
+                        }
+
+                        prev_level_preblit_barrier = Some(
+                            current_layer_preblit_barrier
+                                .new_layout(ImageLayout::TRANSFER_SRC_OPTIMAL)
+                                .old_layout(ImageLayout::TRANSFER_DST_OPTIMAL),
+                        );
+                    }
+
+                    let whole_image_but_last_level_range =
+                        ImageSubresourceRange::default()
+                            .aspect_mask(ImageAspectFlags::COLOR)
+                            .base_array_layer(0)
+                            .base_mip_level(0)
+                            .layer_count(1)
+                            .level_count(mip_levels);
+
+                    let final_image_barrier = ImageMemoryBarrier::default()
+                        .src_access_mask(AccessFlags::TRANSFER_READ)
+                        .dst_access_mask(AccessFlags::SHADER_READ)
+                        .old_layout(ImageLayout::TRANSFER_SRC_OPTIMAL)
+                        .new_layout(ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                        .src_queue_family_index(QUEUE_FAMILY_IGNORED)
+                        .dst_queue_family_index(QUEUE_FAMILY_IGNORED)
+                        .subresource_range(whole_image_but_last_level_range)
+                        .image(gpu_image.inner);
+                    image_barriers.clear();
+                    image_barriers.push(final_image_barrier);
+                    if let Some(b) = prev_level_preblit_barrier {
+                        image_barriers.push(
+                            b.new_layout(ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                                .dst_access_mask(AccessFlags::SHADER_READ),
+                        )
+                    }
+
+                    unsafe {
+                        dev.cmd_pipeline_barrier(
+                            cb,
+                            PipelineStageFlags::TRANSFER,
+                            PipelineStageFlags::FRAGMENT_SHADER,
+                            DependencyFlags::empty(),
+                            &[],
+                            &[],
+                            &image_barriers,
+                        )
+                    }
+                    Ok(())
+                },
+            )
+            .map_err(|_| LoadTextureFromFileError::MipmapGenerationError)?;
+        struct Return {
+            _staging_buffer: ManagedMappableBuffer<u8>,
+            _cb: CommandBuffer,
+            fence: Fence,
+        }
+
+        impl FenceProducer for Return {
+            type Iter = std::iter::Once<ash::vk::Fence>;
+            fn get_fences(&self) -> Self::Iter {
+                std::iter::once(self.fence.get_inner())
+            }
+        }
+
+        Ok((
+            gpu_image,
+            Return {
+                _staging_buffer: staging_buffer,
+                _cb: image_transfer_command_buffer,
+                fence: texture_ready_fence,
+            },
+        ))
+    }
     //SAFETY REQUIREMENTS: Valid ci and ai
     unsafe fn new(
         device: &Arc<Device>,
@@ -1542,6 +1811,8 @@ impl GpuImage {
             parent: device.clone(),
             inner,
             allocation,
+
+            mip_levels: image_create_info.mip_levels,
         })
     }
 }

@@ -108,7 +108,7 @@ impl CommandPool {
     }
 
     pub fn alloc_command_buffers(
-        self: Rc<Self>,
+        self: &Rc<Self>,
         count: u32,
         level: CommandBufferLevel,
         mut opt_f: Option<
