@@ -1251,11 +1251,10 @@ impl Context {
                     Vec3::broadcast(0.),
                     Vec3::unit_z(),
                 );
-                let mut proj: Mat4<f32> = Mat4::perspective_rh_zo(
+                let mut proj: Mat4<f32> = Mat4::infinite_perspective_rh(
                     45f32.to_radians(),
                     sd.swapchain.get_aspect_ratio(),
-                    0.1,
-                    10.0,
+                    0.01,
                 );
 
                 //Need to invert the projection matrix in order to flip the y
