@@ -1,6 +1,6 @@
 use std::{
     collections::HashSet,
-    ffi::CStr,
+    ffi::{CStr, CString},
     fmt::{Debug, Display},
     marker::PhantomData,
     mem::{offset_of, size_of, size_of_val},
@@ -20,7 +20,7 @@ use ash::{
         BufferCreateInfo, BufferImageCopy, BufferUsageFlags, ClearColorValue,
         ClearValue, ColorComponentFlags, CommandBufferBeginInfo,
         CommandBufferLevel, CommandBufferUsageFlags, CommandPoolCreateFlags,
-        CommandPoolCreateInfo, CompareOp, CullModeFlags,
+        CommandPoolCreateInfo, CompareOp, CullModeFlags, DebugUtilsLabelEXT,
         DebugUtilsMessageSeverityFlagsEXT, DebugUtilsMessageTypeFlagsEXT,
         DebugUtilsMessengerCreateInfoEXT, DependencyFlags,
         DescriptorBufferInfo, DescriptorImageInfo, DescriptorPoolCreateInfo,
@@ -883,22 +883,22 @@ impl Context {
                         e,
                     )
                 })?;
-        let command_pool_ci = CommandPoolCreateInfo::default()
+        let graphics_command_pool_ci = CommandPoolCreateInfo::default()
             .queue_family_index(graphics_queue_index)
             .flags(CommandPoolCreateFlags::RESET_COMMAND_BUFFER);
-        let command_pool = Rc::new(
+        let graphics_command_pool = Rc::new(
             //SAFETY: Valid ci
             unsafe {
                 CommandPool::new(
                     &device,
-                    &command_pool_ci,
+                    &graphics_command_pool_ci,
                     debug_name!(device, "Render command pool"),
                 )
             }
             .map_err(|_| CommandBufferCreation)?,
         );
 
-        let command_buffers = command_pool
+        let command_buffers = graphics_command_pool
             .alloc_command_buffers(
                 MAX_FRAMES_IN_FLIGHT,
                 CommandBufferLevel::PRIMARY,
@@ -1039,7 +1039,7 @@ impl Context {
             "res/texture.png",
             &device,
             &transfer_command_pool,
-            &command_pool,
+            &graphics_command_pool,
             transfer_queue_index,
             graphics_queue_index,
         )
@@ -1519,6 +1519,10 @@ unsafe fn evaluate_physical_device(
     }
 }
 
+const CYAN: [f32; 4] = [0., 0.976, 1., 1.0];
+const MAGENTA: [f32; 4] = [0.839, 0.067, 0.804, 1.0];
+const YELLOW: [f32; 4] = [0.957, 0.98, 0.424, 1.0];
+
 fn map_multisample_flag_to_sample_count(flag: SampleCountFlags) -> u64 {
     match flag {
         SampleCountFlags::TYPE_1=>1,
@@ -1662,30 +1666,37 @@ impl GpuImage {
             )
         }
         .unwrap();
-        let base_level_subresource_range = ImageSubresourceRange::default()
+
+        let whole_image_subresource_range = ImageSubresourceRange::default()
             .aspect_mask(ImageAspectFlags::COLOR)
             .base_mip_level(0)
             .level_count(mip_levels)
             .base_array_layer(0)
             .layer_count(1);
+
         let image_transfer_begin_info = CommandBufferBeginInfo::default()
             .flags(CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+
+        //Sets up image to be transfered into from the buffer
         let image_pre_load_barrier = ImageMemoryBarrier::default()
             .old_layout(ImageLayout::UNDEFINED)
             .new_layout(ImageLayout::TRANSFER_DST_OPTIMAL)
             .src_queue_family_index(QUEUE_FAMILY_IGNORED)
             .dst_queue_family_index(QUEUE_FAMILY_IGNORED)
             .image(gpu_image.inner)
-            .subresource_range(base_level_subresource_range)
+            .subresource_range(whole_image_subresource_range)
             .src_access_mask(AccessFlags::empty())
             .dst_access_mask(AccessFlags::TRANSFER_WRITE);
+
+        //Transfers the image to the graphics queue and makes it so that the
+        //whole image is in TRANSFER_SRC_OPTIMAL
         let image_post_load_barrier = ImageMemoryBarrier::default()
             .image(gpu_image.inner)
             .old_layout(ImageLayout::TRANSFER_DST_OPTIMAL)
             .new_layout(ImageLayout::TRANSFER_SRC_OPTIMAL)
             .src_queue_family_index(transfer_queue_index)
             .dst_queue_family_index(graphics_queue_index)
-            .subresource_range(base_level_subresource_range)
+            .subresource_range(whole_image_subresource_range)
             .src_access_mask(AccessFlags::TRANSFER_WRITE)
             .dst_access_mask(AccessFlags::TRANSFER_READ);
 
@@ -1694,6 +1705,7 @@ impl GpuImage {
             .mip_level(0)
             .base_array_layer(0)
             .layer_count(1);
+
         let regions = &[BufferImageCopy::default()
             .buffer_offset(0)
             .buffer_row_length(0)
@@ -1706,13 +1718,6 @@ impl GpuImage {
                 depth: 1,
             })];
 
-        let texture_ready_fence = Fence::new(
-            device,
-            false,
-            debug_name!(device, "Texture Ready Fence"),
-        )
-        .unwrap();
-
         let transfer_complete_semaphore = Semaphore::new(
             device,
             debug_name!(
@@ -1722,10 +1727,6 @@ impl GpuImage {
             ),
         )
         .unwrap();
-
-        let mut mipmap_generate_command_buffer = graphics_command_pool
-            .alloc_command_buffer(CommandBufferLevel::PRIMARY)
-            .unwrap();
 
         image_transfer_command_buffer
             .record_and_submit(
@@ -1740,6 +1741,19 @@ impl GpuImage {
                     //SAFETY: cb and all parameters are from the same device
 
                     unsafe {
+                        if let Some(debug_device) = device.debug_device_ref() {
+                            let debug_label = CString::new(format!(
+                                "Transferring image at {:?} to base mip level",
+                                path.clone().as_ref()
+                            ))
+                            .unwrap();
+                            let debug_label = DebugUtilsLabelEXT::default()
+                                .label_name(&debug_label)
+                                .color(MAGENTA);
+
+                            debug_device
+                                .cmd_begin_debug_utils_label(cb, &debug_label);
+                        }
                         dev.cmd_pipeline_barrier(
                             cb,
                             PipelineStageFlags::TOP_OF_PIPE,
@@ -1767,12 +1781,27 @@ impl GpuImage {
                         );
                     };
 
+                    if let Some(debug_device) = device.debug_device_ref() {
+                        unsafe { debug_device.cmd_end_debug_utils_label(cb) };
+                    }
+
                     Ok(())
                 },
             )
             .map_err(|_| LoadTextureFromFileError::GpuUploadError)?;
         let generate_mipmaps_begin_info = CommandBufferBeginInfo::default()
             .flags(CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+        let mut mipmap_generate_command_buffer = graphics_command_pool
+            .alloc_command_buffer(CommandBufferLevel::PRIMARY)
+            .unwrap();
+
+        let texture_ready_fence = Fence::new(
+            device,
+            false,
+            debug_name!(device, "Texture Ready Fence"),
+        )
+        .unwrap();
+
         mipmap_generate_command_buffer
             .record_and_submit(
                 graphics_queue_index,
@@ -1785,7 +1814,40 @@ impl GpuImage {
                 |dev, cb| -> Result<(), ash::vk::Result> {
                     let mut prev_level_preblit_barrier = None;
                     let mut image_barriers = Vec::with_capacity(2);
+                    if let Some(debug_device) = device.debug_device_ref() {
+                        let label_name = CString::new(format!(
+                            "Generating mipmaps for texture {:?}",
+                            path.clone().as_ref()
+                        ))
+                        .unwrap();
+                        let debug_label = DebugUtilsLabelEXT::default()
+                            .label_name(&label_name)
+                            .color(YELLOW);
+
+                        unsafe {
+                            debug_device
+                                .cmd_begin_debug_utils_label(cb, &debug_label)
+                        };
+                    }
                     for mip_level in 1..mip_levels {
+                        if let Some(debug_device) = device.debug_device_ref() {
+                            let label_name = CString::new(format!(
+                                "Mip Level {} of {:?}",
+                                mip_level,
+                                path.clone().as_ref()
+                            ))
+                            .unwrap();
+
+                            let debug_label = DebugUtilsLabelEXT::default()
+                                .label_name(&label_name)
+                                .color(CYAN);
+                            unsafe {
+                                debug_device.cmd_begin_debug_utils_label(
+                                    cb,
+                                    &debug_label,
+                                )
+                            };
+                        }
                         let prev_level = mip_level - 1;
 
                         let current_level_range =
@@ -1873,12 +1935,19 @@ impl GpuImage {
                                 vk::Filter::LINEAR,
                             );
                         }
-
+                        //Transfer the level we just wrote into
+                        //TRANSFER_SRC_OPTIMAL for future blits
                         prev_level_preblit_barrier = Some(
                             current_layer_preblit_barrier
                                 .new_layout(ImageLayout::TRANSFER_SRC_OPTIMAL)
                                 .old_layout(ImageLayout::TRANSFER_DST_OPTIMAL),
                         );
+
+                        if let Some(debug_device) = device.debug_device_ref() {
+                            unsafe {
+                                debug_device.cmd_end_debug_utils_label(cb)
+                            };
+                        }
                     }
 
                     let whole_image_but_last_level_range =
@@ -1887,6 +1956,9 @@ impl GpuImage {
                             .base_array_layer(0)
                             .base_mip_level(0)
                             .layer_count(1)
+                            //If there's only one mip level, prev_image_barrier
+                            //will be None. Otherwise, that barrier will handle
+                            //that mip level
                             .level_count((mip_levels - 1).max(1));
 
                     let final_image_barrier = ImageMemoryBarrier::default()
@@ -1916,7 +1988,10 @@ impl GpuImage {
                             &[],
                             &[],
                             &image_barriers,
-                        )
+                        );
+                        if let Some(debug_device) = device.debug_device_ref() {
+                            debug_device.cmd_end_debug_utils_label(cb);
+                        }
                     }
                     Ok(())
                 },
