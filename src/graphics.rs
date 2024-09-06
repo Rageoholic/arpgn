@@ -886,7 +886,7 @@ impl Context {
         let graphics_command_pool_ci = CommandPoolCreateInfo::default()
             .queue_family_index(graphics_queue_index)
             .flags(CommandPoolCreateFlags::RESET_COMMAND_BUFFER);
-        let graphics_command_pool = Rc::new(
+        let graphics_command_pool = Arc::new(
             //SAFETY: Valid ci
             unsafe {
                 CommandPool::new(
@@ -1025,7 +1025,7 @@ impl Context {
             .queue_family_index(transfer_queue_index)
             .flags(CommandPoolCreateFlags::TRANSIENT);
         //SAFETY: valid cis
-        let transfer_command_pool = Rc::new(
+        let transfer_command_pool = Arc::new(
             unsafe {
                 CommandPool::new(
                     &device,
@@ -1598,8 +1598,8 @@ impl GpuImage {
     fn from_file(
         path: impl AsRef<Path> + Clone,
         device: &Arc<Device>,
-        transfer_command_pool: &Rc<CommandPool>,
-        graphics_command_pool: &Rc<CommandPool>,
+        transfer_command_pool: &Arc<CommandPool>,
+        graphics_command_pool: &Arc<CommandPool>,
         transfer_queue_index: u32,
         graphics_queue_index: u32,
     ) -> Result<(Self, impl FenceProducer), LoadTextureFromFileError> {
