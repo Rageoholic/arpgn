@@ -23,17 +23,13 @@ impl<T: Pod + Zeroable> ManagedMappableBuffer<T> {
         ai: &BufferAllocationCreateInfo,
         debug_name: Option<String>,
     ) -> VkResult<Self> {
-        let (inner, allocation) =
-            //SAFETY: Valid ci, valid ai
-            unsafe { device.get_allocator_ref().create_buffer(ci, ai) }?;
+        let (inner, allocation) = unsafe { device.get_allocator_ref().create_buffer(ci, ai) }?;
         associate_debug_name!(device, inner, debug_name);
 
         Ok(Self {
             parent: device.clone(),
             inner,
-            allocation_info: device
-                .get_allocator_ref()
-                .get_allocation_info(&allocation),
+            allocation_info: device.get_allocator_ref().get_allocation_info(&allocation),
             allocation,
             _phantom: PhantomData,
         })
@@ -49,9 +45,7 @@ impl<T: Pod + Zeroable> ManagedMappableBuffer<T> {
         assert!(self.allocation_info.size as usize >= size_of_val(data));
 
         //SAFETY: We just checked that the allocation is big enough for this
-        unsafe {
-            copy_nonoverlapping(data.as_ptr(), mapping as *mut T, data.len())
-        };
+        unsafe { copy_nonoverlapping(data.as_ptr(), mapping as *mut T, data.len()) };
 
         self.parent
             .get_allocator_ref()

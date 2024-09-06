@@ -108,9 +108,7 @@ impl CommandPool {
         self: &Arc<Self>,
         count: u32,
         level: CommandBufferLevel,
-        mut opt_f: Option<
-            impl FnMut(usize, ash::vk::CommandBuffer) -> Option<String>,
-        >,
+        mut opt_f: Option<impl FnMut(usize, ash::vk::CommandBuffer) -> Option<String>>,
     ) -> VkResult<Vec<CommandBuffer>> {
         let mut cbs = Vec::with_capacity(count as usize);
         let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
@@ -123,9 +121,7 @@ impl CommandPool {
         //the only ones accessing it. In addition, thanks to us being the only
         //vulkan struct passed we know everything comes from the same parent
         //device
-        let raw_cbs = unsafe {
-            self.parent.as_inner_ref().allocate_command_buffers(&ai)
-        }?;
+        let raw_cbs = unsafe { self.parent.as_inner_ref().allocate_command_buffers(&ai) }?;
         for (i, raw_cb) in raw_cbs.into_iter().enumerate() {
             if let Some(ref mut f) = opt_f {
                 if self.parent.is_debug() {
@@ -152,11 +148,9 @@ impl CommandPool {
             .command_buffer_count(1)
             .level(level);
         //SAFETY: Device and inner are from same place
-        let raw_cb = unsafe {
-            self.parent.as_inner_ref().allocate_command_buffers(&ai)
-        }?
-        .pop()
-        .unwrap();
+        let raw_cb = unsafe { self.parent.as_inner_ref().allocate_command_buffers(&ai) }?
+            .pop()
+            .unwrap();
         Ok(CommandBuffer {
             inner: raw_cb,
             parent: self.clone(),

@@ -14,38 +14,30 @@ use std::{
 use ash::{
     prelude::VkResult,
     vk::{
-        self, api_version_major, api_version_minor, api_version_patch,
-        AccessFlags, ApplicationInfo, AttachmentDescription, AttachmentLoadOp,
-        AttachmentReference, AttachmentStoreOp, BlendFactor, BorderColor,
-        BufferCreateInfo, BufferImageCopy, BufferUsageFlags, ClearColorValue,
-        ClearValue, ColorComponentFlags, CommandBufferBeginInfo,
-        CommandBufferLevel, CommandBufferUsageFlags, CommandPoolCreateFlags,
-        CommandPoolCreateInfo, CompareOp, CullModeFlags, DebugUtilsLabelEXT,
-        DebugUtilsMessageSeverityFlagsEXT, DebugUtilsMessageTypeFlagsEXT,
-        DebugUtilsMessengerCreateInfoEXT, DependencyFlags,
-        DescriptorBufferInfo, DescriptorImageInfo, DescriptorPoolCreateInfo,
-        DescriptorPoolSize, DescriptorSetAllocateInfo,
-        DescriptorSetLayoutBinding, DescriptorSetLayoutCreateInfo,
-        DescriptorType, DeviceCreateInfo, DeviceQueueCreateInfo, Extent3D,
-        Filter, Format, FrontFace, GraphicsPipelineCreateInfo,
-        ImageAspectFlags, ImageBlit, ImageCreateInfo, ImageLayout,
-        ImageMemoryBarrier, ImageSubresourceLayers, ImageSubresourceRange,
-        ImageTiling, ImageType, ImageUsageFlags, ImageView,
-        ImageViewCreateInfo, ImageViewType, IndexType, InstanceCreateInfo,
-        LogicOp, MemoryPropertyFlags, Offset3D, PhysicalDevice,
-        PhysicalDeviceType, PipelineBindPoint,
-        PipelineColorBlendAttachmentState, PipelineColorBlendStateCreateInfo,
-        PipelineInputAssemblyStateCreateInfo, PipelineLayoutCreateInfo,
-        PipelineMultisampleStateCreateInfo,
-        PipelineRasterizationStateCreateInfo, PipelineShaderStageCreateInfo,
-        PipelineStageFlags, PipelineVertexInputStateCreateInfo,
-        PipelineViewportStateCreateInfo, PolygonMode, PrimitiveTopology,
-        QueueFlags, RenderPassBeginInfo, RenderPassCreateInfo,
-        SampleCountFlags, Sampler, SamplerAddressMode, SamplerCreateInfo,
-        SamplerMipmapMode, ShaderStageFlags, SharingMode, SubpassContents,
-        SubpassDescription, VertexInputAttributeDescription,
-        VertexInputBindingDescription, VertexInputRate, WriteDescriptorSet,
-        API_VERSION_1_0, QUEUE_FAMILY_IGNORED,
+        self, api_version_major, api_version_minor, api_version_patch, AccessFlags,
+        ApplicationInfo, AttachmentDescription, AttachmentLoadOp, AttachmentReference,
+        AttachmentStoreOp, BlendFactor, BorderColor, BufferCreateInfo, BufferImageCopy,
+        BufferUsageFlags, ClearColorValue, ClearValue, ColorComponentFlags, CommandBufferBeginInfo,
+        CommandBufferLevel, CommandBufferUsageFlags, CommandPoolCreateFlags, CommandPoolCreateInfo,
+        CompareOp, CullModeFlags, DebugUtilsLabelEXT, DebugUtilsMessageSeverityFlagsEXT,
+        DebugUtilsMessageTypeFlagsEXT, DebugUtilsMessengerCreateInfoEXT, DependencyFlags,
+        DescriptorBufferInfo, DescriptorImageInfo, DescriptorPoolCreateInfo, DescriptorPoolSize,
+        DescriptorSetAllocateInfo, DescriptorSetLayoutBinding, DescriptorSetLayoutCreateInfo,
+        DescriptorType, DeviceCreateInfo, DeviceQueueCreateInfo, Extent3D, Filter, Format,
+        FrontFace, GraphicsPipelineCreateInfo, ImageAspectFlags, ImageBlit, ImageCreateInfo,
+        ImageLayout, ImageMemoryBarrier, ImageSubresourceLayers, ImageSubresourceRange,
+        ImageTiling, ImageType, ImageUsageFlags, ImageView, ImageViewCreateInfo, ImageViewType,
+        IndexType, InstanceCreateInfo, LogicOp, MemoryPropertyFlags, Offset3D, PhysicalDevice,
+        PhysicalDeviceType, PipelineBindPoint, PipelineColorBlendAttachmentState,
+        PipelineColorBlendStateCreateInfo, PipelineInputAssemblyStateCreateInfo,
+        PipelineLayoutCreateInfo, PipelineMultisampleStateCreateInfo,
+        PipelineRasterizationStateCreateInfo, PipelineShaderStageCreateInfo, PipelineStageFlags,
+        PipelineVertexInputStateCreateInfo, PipelineViewportStateCreateInfo, PolygonMode,
+        PrimitiveTopology, QueueFlags, RenderPassBeginInfo, RenderPassCreateInfo, SampleCountFlags,
+        Sampler, SamplerAddressMode, SamplerCreateInfo, SamplerMipmapMode, ShaderStageFlags,
+        SharingMode, SubpassContents, SubpassDescription, VertexInputAttributeDescription,
+        VertexInputBindingDescription, VertexInputRate, WriteDescriptorSet, API_VERSION_1_0,
+        QUEUE_FAMILY_IGNORED,
     },
     LoadingError,
 };
@@ -138,9 +130,7 @@ struct Vertex {
     coord: Vec2<f32>,
 }
 impl Vertex {
-    fn vertex_attribute_descriptions(
-        binding: u32,
-    ) -> [VertexInputAttributeDescription; 3] {
+    fn vertex_attribute_descriptions(binding: u32) -> [VertexInputAttributeDescription; 3] {
         [
             VertexInputAttributeDescription::default()
                 .location(0)
@@ -311,10 +301,7 @@ impl SurfaceDerived {
             .samples(multisample_flag)
             .format(swapchain.get_format())
             .tiling(ImageTiling::OPTIMAL)
-            .usage(
-                ImageUsageFlags::COLOR_ATTACHMENT
-                    | ImageUsageFlags::TRANSIENT_ATTACHMENT,
-            )
+            .usage(ImageUsageFlags::COLOR_ATTACHMENT | ImageUsageFlags::TRANSIENT_ATTACHMENT)
             .mip_levels(1)
             .array_layers(1)
             .image_type(ImageType::TYPE_2D);
@@ -325,8 +312,7 @@ impl SurfaceDerived {
             ..Default::default()
         };
 
-        let mut msaa_color_attachment_views =
-            Vec::with_capacity(swapchain.image_count() as usize);
+        let mut msaa_color_attachment_views = Vec::with_capacity(swapchain.image_count() as usize);
 
         for i in 0..swapchain.image_count() {
             let msaa_color_attachment_image = Arc::new(
@@ -342,17 +328,19 @@ impl SurfaceDerived {
                         ),
                     )
                 }
-                .map_err(|e|
+                .map_err(|e| {
                     RenderSetupError::UnknownVulkan(
-                    format!("Could not create Multisample Color Attachment Image {}", i), e))?,
+                        format!("Could not create Multisample Color Attachment Image {}", i),
+                        e,
+                    )
+                })?,
             );
-            let msaa_color_attachment_subresource_range =
-                ImageSubresourceRange::default()
-                    .aspect_mask(ImageAspectFlags::COLOR)
-                    .base_mip_level(0)
-                    .level_count(1)
-                    .base_array_layer(0)
-                    .layer_count(1);
+            let msaa_color_attachment_subresource_range = ImageSubresourceRange::default()
+                .aspect_mask(ImageAspectFlags::COLOR)
+                .base_mip_level(0)
+                .level_count(1)
+                .base_array_layer(0)
+                .layer_count(1);
 
             let msaa_color_attachment_view_ci = ImageViewCreateInfo::default()
                 .image(msaa_color_attachment_image.inner)
@@ -370,7 +358,12 @@ impl SurfaceDerived {
                     ),
                 )
             }
-            .unwrap();
+            .map_err(|e| {
+                RenderSetupError::UnknownVulkan(
+                    format!("Could not create MSAA Color Attachment Image View [{}]", i),
+                    e,
+                )
+            })?;
             msaa_color_attachment_views.push(msaa_color_attachment_image_view);
         }
 
@@ -401,30 +394,27 @@ impl SurfaceDerived {
                     .name(m.get_name())
             })
             .collect::<Vec<_>>();
-        let vertex_attribute_descriptions =
-            Vertex::vertex_attribute_descriptions(0);
+        let vertex_attribute_descriptions = Vertex::vertex_attribute_descriptions(0);
         let vertex_binding_descriptions =
             Vertex::vertex_binding_descriptions(0, VertexInputRate::VERTEX);
         let vertex_input_state = PipelineVertexInputStateCreateInfo::default()
             .vertex_attribute_descriptions(&vertex_attribute_descriptions)
             .vertex_binding_descriptions(&vertex_binding_descriptions);
 
-        let input_assembly_state =
-            PipelineInputAssemblyStateCreateInfo::default()
-                .topology(PrimitiveTopology::TRIANGLE_LIST)
-                .primitive_restart_enable(false);
+        let input_assembly_state = PipelineInputAssemblyStateCreateInfo::default()
+            .topology(PrimitiveTopology::TRIANGLE_LIST)
+            .primitive_restart_enable(false);
 
-        let rasterization_state =
-            PipelineRasterizationStateCreateInfo::default()
-                .depth_clamp_enable(false)
-                .rasterizer_discard_enable(false)
-                .polygon_mode(PolygonMode::FILL)
-                .line_width(1.0)
-                .cull_mode(CullModeFlags::BACK)
-                .front_face(FrontFace::CLOCKWISE)
-                .depth_bias_enable(false);
-        let multisample_state = PipelineMultisampleStateCreateInfo::default()
-            .rasterization_samples(multisample_flag);
+        let rasterization_state = PipelineRasterizationStateCreateInfo::default()
+            .depth_clamp_enable(false)
+            .rasterizer_discard_enable(false)
+            .polygon_mode(PolygonMode::FILL)
+            .line_width(1.0)
+            .cull_mode(CullModeFlags::BACK)
+            .front_face(FrontFace::CLOCKWISE)
+            .depth_bias_enable(false);
+        let multisample_state =
+            PipelineMultisampleStateCreateInfo::default().rasterization_samples(multisample_flag);
 
         let attachments = [PipelineColorBlendAttachmentState::default()
             .dst_color_blend_factor(BlendFactor::ONE)
@@ -462,9 +452,7 @@ impl SurfaceDerived {
                 Some(msaa_color_attachment_views),
                 Some(|i, _| Some(format!("Swapchain framebuffer {}", i))),
             )
-            .map_err(|e| {
-                UnknownVulkan("While creating framebuffers".to_owned(), e)
-            })?;
+            .map_err(|e| UnknownVulkan("While creating framebuffers".to_owned(), e))?;
         Ok(Self {
             swapchain,
             pipeline,
@@ -534,9 +522,7 @@ impl Display for ShaderModuleCreationErrors {
                     )
                 }
                 shader_module::Error::ShaderCompilation(err) => err.to_string(),
-                shader_module::Error::MemoryExhaustion => {
-                    "Memory exhausted".into()
-                }
+                shader_module::Error::MemoryExhaustion => "Memory exhausted".into(),
             };
             f.write_str(&line)?;
         }
@@ -558,8 +544,7 @@ impl Context {
         //having instance hold on to a ref counted pointer to entry
             Arc::new(unsafe { ash::Entry::load().map_err(Loading) }?);
         //SAFETY: Should be good?
-        let vk_version = match unsafe { entry.try_enumerate_instance_version() }
-        {
+        let vk_version = match unsafe { entry.try_enumerate_instance_version() } {
             Ok(ver) => ver.unwrap_or(API_VERSION_1_0),
 
             Err(_) => unreachable!(),
@@ -579,11 +564,10 @@ impl Context {
                 .map_err(|e| {
                     UnknownVulkan("enumerating instance extensions".to_owned(), e)
                 })?;
-        let windowing_required_extensions =
-            ash_window::enumerate_required_extensions(
-                event_loop.display_handle().unwrap().as_raw(),
-            )
-            .unwrap();
+        let windowing_required_extensions = ash_window::enumerate_required_extensions(
+            event_loop.display_handle().unwrap().as_raw(),
+        )
+        .unwrap();
         let mut mandatory_extensions: Vec<&CStr> =
             Vec::with_capacity(windowing_required_extensions.len());
         mandatory_extensions.extend(
@@ -599,8 +583,7 @@ impl Context {
             return Err(InstanceCreation);
         }
 
-        let mut missing_mandatory_extensions =
-            Vec::with_capacity(mandatory_extensions.len());
+        let mut missing_mandatory_extensions = Vec::with_capacity(mandatory_extensions.len());
 
         for ext in &mandatory_extensions {
             let mut found = false;
@@ -611,15 +594,12 @@ impl Context {
                 }
             }
             if !found {
-                missing_mandatory_extensions
-                    .push(ext.to_str().unwrap().to_owned());
+                missing_mandatory_extensions.push(ext.to_str().unwrap().to_owned());
             }
         }
 
         if !missing_mandatory_extensions.is_empty() {
-            return Err(MissingMandatoryExtensions(
-                missing_mandatory_extensions,
-            ));
+            return Err(MissingMandatoryExtensions(missing_mandatory_extensions));
         }
         let mut instance_exts: Vec<_> = mandatory_extensions
             .iter()
@@ -654,30 +634,24 @@ impl Context {
             .enabled_extension_names(&instance_exts)
             .enabled_layer_names(&layer_names);
 
-        let all_debug_message_types =
-            DebugUtilsMessageTypeFlagsEXT::DEVICE_ADDRESS_BINDING
-                | DebugUtilsMessageTypeFlagsEXT::GENERAL
-                | DebugUtilsMessageTypeFlagsEXT::PERFORMANCE
-                | DebugUtilsMessageTypeFlagsEXT::VALIDATION;
+        let all_debug_message_types = DebugUtilsMessageTypeFlagsEXT::DEVICE_ADDRESS_BINDING
+            | DebugUtilsMessageTypeFlagsEXT::GENERAL
+            | DebugUtilsMessageTypeFlagsEXT::PERFORMANCE
+            | DebugUtilsMessageTypeFlagsEXT::VALIDATION;
 
-        let mut debug_utils_messenger_ci =
-            DebugUtilsMessengerCreateInfoEXT::default()
-                .message_severity(graphics_validation_sev_to_debug_utils_flags(
-                    opts.graphics_validation_layers,
-                ))
-                .message_type(all_debug_message_types)
-                .pfn_user_callback(Some(
-                    debug_messenger::default_debug_callback,
-                ));
+        let mut debug_utils_messenger_ci = DebugUtilsMessengerCreateInfoEXT::default()
+            .message_severity(graphics_validation_sev_to_debug_utils_flags(
+                opts.graphics_validation_layers,
+            ))
+            .message_type(all_debug_message_types)
+            .pfn_user_callback(Some(debug_messenger::default_debug_callback));
         if !layer_names.is_empty() {
-            instance_create_info =
-                instance_create_info.push_next(&mut debug_utils_messenger_ci);
+            instance_create_info = instance_create_info.push_next(&mut debug_utils_messenger_ci);
         }
         //SAFETY: Valid ci. We know because we made it and none of the lifetimes
         //involved have expired
-        let mut instance =
-            unsafe { Instance::new(&entry, &instance_create_info) }
-                .map_err(|_| InstanceCreation)?;
+        let mut instance = unsafe { Instance::new(&entry, &instance_create_info) }
+            .map_err(|_| InstanceCreation)?;
 
         if opts.graphics_validation_layers != ValidationLevel::None {
             //SAFETY: Valid ci. We know cause we made it
@@ -690,22 +664,15 @@ impl Context {
 
         let win = Arc::new(
             event_loop
-                .create_window(
-                    WindowAttributes::default().with_inner_size(
-                        opts.dimensions.unwrap_or(
-                            LogicalSize::new(
-                                DEFAULT_WINDOW_WIDTH,
-                                DEFAULT_WINDOW_HEIGHT,
-                            )
-                            .into(),
-                        ),
+                .create_window(WindowAttributes::default().with_inner_size(
+                    opts.dimensions.unwrap_or(
+                        LogicalSize::new(DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT).into(),
                     ),
-                )
+                ))
                 .map_err(WindowCreation)?,
         );
 
-        let surface = surface::Surface::new(&instance, &win)
-            .map_err(|_| SurfaceCreation)?;
+        let surface = surface::Surface::new(&instance, &win).map_err(|_| SurfaceCreation)?;
 
         let physical_devices = instance
             .get_physical_devices()
@@ -774,8 +741,7 @@ impl Context {
             .map_err(|_| DeviceCreation)?,
         );
 
-        let shader_compiler =
-            shaderc::Compiler::new().ok_or(ShaderCompilerCreation)?;
+        let shader_compiler = shaderc::Compiler::new().ok_or(ShaderCompilerCreation)?;
 
         let vert_shader_path = Path::new("shaders/shader.vert");
 
@@ -799,16 +765,11 @@ impl Context {
             debug_string!(device.is_debug(), "Fragment Shader Module"),
         );
 
-        let (vert_shader_mod, frag_shader_mod) =
-            match (vert_shader_mod, frag_shader_mod) {
-                (Ok(mod1), Ok(mod2)) => Ok((mod1, mod2)),
-                (Err(e), Ok(_)) | (Ok(_), Err(e)) => {
-                    Err(ShaderModuleCreationErrors(vec![e]))
-                }
-                (Err(e1), Err(e2)) => {
-                    Err(ShaderModuleCreationErrors(vec![e1, e2]))
-                }
-            }?;
+        let (vert_shader_mod, frag_shader_mod) = match (vert_shader_mod, frag_shader_mod) {
+            (Ok(mod1), Ok(mod2)) => Ok((mod1, mod2)),
+            (Err(e), Ok(_)) | (Ok(_), Err(e)) => Err(ShaderModuleCreationErrors(vec![e])),
+            (Err(e1), Err(e2)) => Err(ShaderModuleCreationErrors(vec![e1, e2])),
+        }?;
         let descriptor_bindings = &[
             DescriptorSetLayoutBinding::default()
                 .binding(0)
@@ -821,8 +782,8 @@ impl Context {
                 .descriptor_count(1)
                 .stage_flags(ShaderStageFlags::FRAGMENT),
         ];
-        let descriptor_set_layout_ci = DescriptorSetLayoutCreateInfo::default()
-            .bindings(descriptor_bindings);
+        let descriptor_set_layout_ci =
+            DescriptorSetLayoutCreateInfo::default().bindings(descriptor_bindings);
         //SAFETY: Valid ci
         let descriptor_set_layout = unsafe {
             DescriptorSetLayout::new(
@@ -860,10 +821,7 @@ impl Context {
             .map_err(|_| DescriptorSetCreation)?,
         );
 
-        let duped_layouts = vec![
-            descriptor_set_layout.as_inner();
-            MAX_FRAMES_IN_FLIGHT as usize
-        ];
+        let duped_layouts = vec![descriptor_set_layout.as_inner(); MAX_FRAMES_IN_FLIGHT as usize];
         let descriptor_set_ai = DescriptorSetAllocateInfo::default()
             .descriptor_pool(descriptor_pool.as_inner())
             .set_layouts(&duped_layouts);
@@ -878,23 +836,21 @@ impl Context {
         }
         .unwrap();
 
-        let pipeline_layout_ci = PipelineLayoutCreateInfo::default()
-            .set_layouts(descriptor_set_layouts);
+        let pipeline_layout_ci =
+            PipelineLayoutCreateInfo::default().set_layouts(descriptor_set_layouts);
 
-        let pipeline_layout =
-            //SAFETY: Valid ci
-            unsafe { PipelineLayout::new(&device, &pipeline_layout_ci,debug_string!(device.is_debug(),"Pipeline layout")) }
-                .map_err(|e| {
-                    UnknownVulkan(
-                        "creating pipeline layout".into(),
-                        e,
-                    )
-                })?;
+        let pipeline_layout = unsafe {
+            PipelineLayout::new(
+                &device,
+                &pipeline_layout_ci,
+                debug_string!(device.is_debug(), "Pipeline layout"),
+            )
+        }
+        .map_err(|e| UnknownVulkan("creating pipeline layout".into(), e))?;
         let graphics_command_pool_ci = CommandPoolCreateInfo::default()
             .queue_family_index(graphics_queue_index)
             .flags(CommandPoolCreateFlags::RESET_COMMAND_BUFFER);
         let graphics_command_pool = Arc::new(
-            //SAFETY: Valid ci
             unsafe {
                 CommandPool::new(
                     &device,
@@ -913,18 +869,12 @@ impl Context {
             )
             .map_err(|_| CommandBufferCreation)?;
 
-        let mut vertex_buffers =
-            Vec::with_capacity(MAX_FRAMES_IN_FLIGHT as usize);
-        let mut index_buffers =
-            Vec::with_capacity(MAX_FRAMES_IN_FLIGHT as usize);
-        let mut uniform_buffers =
-            Vec::with_capacity(MAX_FRAMES_IN_FLIGHT as usize);
-        let mut image_available_semaphores =
-            Vec::with_capacity(MAX_FRAMES_IN_FLIGHT as usize);
-        let mut render_complete_semaphores =
-            Vec::with_capacity(MAX_FRAMES_IN_FLIGHT as usize);
-        let mut prev_render_complete_fence =
-            Vec::with_capacity(MAX_FRAMES_IN_FLIGHT as usize);
+        let mut vertex_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT as usize);
+        let mut index_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT as usize);
+        let mut uniform_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT as usize);
+        let mut image_available_semaphores = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT as usize);
+        let mut render_complete_semaphores = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT as usize);
+        let mut prev_render_complete_fence = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT as usize);
 
         let vertex_buffer_ci = BufferCreateInfo::default()
             .sharing_mode(SharingMode::EXCLUSIVE)
@@ -935,8 +885,7 @@ impl Context {
             flags: vk_mem::AllocationCreateFlags::MAPPED
                 | vk_mem::AllocationCreateFlags::HOST_ACCESS_SEQUENTIAL_WRITE,
             usage: vk_mem::MemoryUsage::AutoPreferDevice,
-            required_flags: MemoryPropertyFlags::HOST_VISIBLE
-                | MemoryPropertyFlags::HOST_COHERENT,
+            required_flags: MemoryPropertyFlags::HOST_VISIBLE | MemoryPropertyFlags::HOST_COHERENT,
 
             ..Default::default()
         };
@@ -949,8 +898,7 @@ impl Context {
             flags: vk_mem::AllocationCreateFlags::MAPPED
                 | vk_mem::AllocationCreateFlags::HOST_ACCESS_SEQUENTIAL_WRITE,
             usage: vk_mem::MemoryUsage::AutoPreferDevice,
-            required_flags: MemoryPropertyFlags::HOST_VISIBLE
-                | MemoryPropertyFlags::HOST_COHERENT,
+            required_flags: MemoryPropertyFlags::HOST_VISIBLE | MemoryPropertyFlags::HOST_COHERENT,
             ..Default::default()
         };
         let uniform_buffer_ci = BufferCreateInfo::default()
@@ -962,8 +910,7 @@ impl Context {
             flags: vk_mem::AllocationCreateFlags::MAPPED
                 | vk_mem::AllocationCreateFlags::HOST_ACCESS_SEQUENTIAL_WRITE,
             usage: vk_mem::MemoryUsage::AutoPreferHost,
-            required_flags: MemoryPropertyFlags::HOST_VISIBLE
-                | MemoryPropertyFlags::HOST_COHERENT,
+            required_flags: MemoryPropertyFlags::HOST_VISIBLE | MemoryPropertyFlags::HOST_COHERENT,
             ..Default::default()
         };
 
@@ -999,11 +946,7 @@ impl Context {
                         &device,
                         &uniform_buffer_ci,
                         &uniform_buffer_ai,
-                        debug_string!(
-                            device.is_debug(),
-                            "Uniform buffer {}",
-                            i
-                        ),
+                        debug_string!(device.is_debug(), "Uniform buffer {}", i),
                     )
                 }
                 .unwrap(),
@@ -1011,22 +954,14 @@ impl Context {
             image_available_semaphores.push(
                 Semaphore::new(
                     &device,
-                    debug_string!(
-                        device.is_debug(),
-                        "image_available_semaphore [{}]",
-                        i,
-                    ),
+                    debug_string!(device.is_debug(), "image_available_semaphore [{}]", i,),
                 )
                 .unwrap(),
             );
             render_complete_semaphores.push(
                 Semaphore::new(
                     &device,
-                    debug_string!(
-                        device.is_debug(),
-                        "render_complete_semaphore [{}]",
-                        i,
-                    ),
+                    debug_string!(device.is_debug(), "render_complete_semaphore [{}]", i,),
                 )
                 .unwrap(),
             );
@@ -1034,11 +969,7 @@ impl Context {
                 Fence::new(
                     &device,
                     true,
-                    debug_string!(
-                        device.is_debug(),
-                        "prev_render_complete_fence [{}]",
-                        i,
-                    ),
+                    debug_string!(device.is_debug(), "prev_render_complete_fence [{}]", i,),
                 )
                 .unwrap(),
             );
@@ -1222,10 +1153,8 @@ impl Context {
                 Some(sd) => {
                     let frame_index = self.frame_index;
                     self.frame_index += 1;
-                    let sync_index =
-                        frame_index % MAX_FRAMES_IN_FLIGHT as usize;
-                    let guard_fence =
-                        &mut self.prev_frame_finished_fences[sync_index];
+                    let sync_index = frame_index % MAX_FRAMES_IN_FLIGHT as usize;
+                    let guard_fence = &mut self.prev_frame_finished_fences[sync_index];
                     guard_fence.wait_and_reset().unwrap();
                     let image_available_semaphore =
                         &mut self.image_available_semaphores[sync_index];
@@ -1234,22 +1163,18 @@ impl Context {
                     let vertex_buffer = &mut self.vertex_buffers[sync_index];
                     let index_buffer = &mut self.index_buffers[sync_index];
                     let uniform_buffer = &mut self.uniform_buffers[sync_index];
-                    let uniform_descriptor_set =
-                        &mut self.uniform_descriptor_sets[sync_index];
+                    let uniform_descriptor_set = &mut self.uniform_descriptor_sets[sync_index];
                     let cb = &mut self.command_buffers[sync_index];
                     //SAFETY: Semaphore derives from same device as swapchain
                     let fb_index = unsafe {
-                        sd.swapchain.acquire_next_image(
-                            Some(image_available_semaphore),
-                            None,
-                        )
+                        sd.swapchain
+                            .acquire_next_image(Some(image_available_semaphore), None)
                     }
                     .unwrap()
                     .0;
                     let fb = &mut sd.swapchain_framebuffers[fb_index as usize];
                     let model = Mat4::rotation_z(
-                        90f32.to_radians()
-                            * self.start_time.elapsed().as_secs_f32(),
+                        90f32.to_radians() * self.start_time.elapsed().as_secs_f32(),
                     );
                     let view: Mat4<f32> = Mat4::look_at_rh(
                         Vec3::new(0., -1., 2.),
@@ -1270,11 +1195,7 @@ impl Context {
 
                     vertex_buffer.upload_data(VERTICES);
                     index_buffer.upload_data(INDICES);
-                    uniform_buffer.upload_data(&[Uniform {
-                        model,
-                        view,
-                        proj,
-                    }]);
+                    uniform_buffer.upload_data(&[Uniform { model, view, proj }]);
 
                     cb.record_and_submit(
                         self.graphics_queue_index,
@@ -1289,24 +1210,18 @@ impl Context {
                             //SAFETY: We know dev and cb are linked. All other vars
                             //used are derived from device
                             unsafe {
-                                if let Some(debug_device) =
-                                    self.device.debug_device_ref()
-                                {
+                                if let Some(debug_device) = self.device.debug_device_ref() {
                                     let label_name = CString::new(format!(
                                         "Rendering frame {} si {} to fb {}",
                                         frame_index, sync_index, fb_index
                                     ))
                                     .unwrap();
 
-                                    let debug_label =
-                                        DebugUtilsLabelEXT::default()
-                                            .label_name(&label_name)
-                                            .color(LIME);
+                                    let debug_label = DebugUtilsLabelEXT::default()
+                                        .label_name(&label_name)
+                                        .color(LIME);
 
-                                    debug_device.cmd_begin_debug_utils_label(
-                                        cb,
-                                        &debug_label,
-                                    );
+                                    debug_device.cmd_begin_debug_utils_label(cb, &debug_label);
                                 }
                                 dev.cmd_bind_descriptor_sets(
                                     cb,
@@ -1347,14 +1262,7 @@ impl Context {
                                     PipelineBindPoint::GRAPHICS,
                                     sd.pipeline.get_inner(),
                                 );
-                                dev.cmd_draw_indexed(
-                                    cb,
-                                    INDICES.len() as u32,
-                                    1,
-                                    0,
-                                    0,
-                                    0,
-                                );
+                                dev.cmd_draw_indexed(cb, INDICES.len() as u32, 1, 0, 0, 0);
                                 dev.cmd_end_render_pass(cb);
                                 Ok(())
                             }
@@ -1392,10 +1300,7 @@ impl PartialEq for ScoredPhysDev {
     }
 }
 impl PartialOrd for ScoredPhysDev {
-    fn partial_cmp(
-        &self,
-        other: &Self,
-    ) -> std::option::Option<std::cmp::Ordering> {
+    fn partial_cmp(&self, other: &Self) -> std::option::Option<std::cmp::Ordering> {
         Some(self.score.cmp(&other.score))
     }
 }
@@ -1417,8 +1322,7 @@ unsafe fn evaluate_physical_device(
     shared_graphics_transfer_queue: bool,
 ) -> Option<ScoredPhysDev> {
     //SAFETY:phys_dev must be derived from instance
-    let properties =
-        unsafe { instance.get_relevant_physical_device_properties(phys_dev) };
+    let properties = unsafe { instance.get_relevant_physical_device_properties(phys_dev) };
     let graphics_queue_index = properties
         .queue_families
         .iter()
@@ -1437,20 +1341,13 @@ unsafe fn evaluate_physical_device(
                 .queue_families
                 .iter()
                 .enumerate()
-                .find(|(_, qfp)| {
-                    qfp.queue_flags.intersects(QueueFlags::GRAPHICS)
-                })
+                .find(|(_, qfp)| qfp.queue_flags.intersects(QueueFlags::GRAPHICS))
         })
         .map(|(i, _)| i as u32);
     let present_queue_index = graphics_queue_index
         .filter(|graphics_queue_index| {
             //SAFETY: qfi is in bounds, phys_dev comes from same instance as surface
-            unsafe {
-                surface.does_queue_support_presentation(
-                    phys_dev,
-                    *graphics_queue_index,
-                )
-            }
+            unsafe { surface.does_queue_support_presentation(phys_dev, *graphics_queue_index) }
         })
         .or_else(|| {
             properties
@@ -1461,12 +1358,7 @@ unsafe fn evaluate_physical_device(
                 .find(|(qfi, _props)| {
                     //SAFETY: qfi is in bounds, phys_dev comes from same
                     //instance as surface
-                    unsafe {
-                        surface.does_queue_support_presentation(
-                            phys_dev,
-                            *qfi as u32,
-                        )
-                    }
+                    unsafe { surface.does_queue_support_presentation(phys_dev, *qfi as u32) }
                 })
                 .map(|(i, _)| i as u32)
         });
@@ -1482,9 +1374,9 @@ unsafe fn evaluate_physical_device(
                 .enumerate()
                 .find(|(_qfi, props)| {
                     props.queue_flags.contains(QueueFlags::TRANSFER)
-                        && !(props.queue_flags.contains(
-                            QueueFlags::GRAPHICS | QueueFlags::COMPUTE,
-                        ))
+                        && !(props
+                            .queue_flags
+                            .contains(QueueFlags::GRAPHICS | QueueFlags::COMPUTE))
                 })
                 .map(|(i, _props)| i as u32)
                 .or(graphics_queue_index)
@@ -1503,18 +1395,17 @@ unsafe fn evaluate_physical_device(
         .unwrap_or(vk::SampleCountFlags::TYPE_1)
     };
     if properties.extensions.iter().any(|ext| {
-        ash::khr::swapchain::NAME.eq(ext.extension_name_as_c_str().expect(
-            "It'd be weird if we got an extension that wasn't a valid cstr",
-        ))
+        ash::khr::swapchain::NAME.eq(ext
+            .extension_name_as_c_str()
+            .expect("It'd be weird if we got an extension that wasn't a valid cstr"))
         //SAFETY: phys_dev from same source as surface
     }) && unsafe {
-        surface.get_compatible_swapchain_info(phys_dev).ok().map_or(
-            false,
-            |swap_info| {
-                !swap_info.formats.is_empty()
-                    && !swap_info.present_modes.is_empty()
-            },
-        )
+        surface
+            .get_compatible_swapchain_info(phys_dev)
+            .ok()
+            .map_or(false, |swap_info| {
+                !swap_info.formats.is_empty() && !swap_info.present_modes.is_empty()
+            })
     } {
         graphics_queue_index.and_then(|graphics_queue_index| {
             present_queue_index.map(|present_queue_index| {
@@ -1528,28 +1419,24 @@ unsafe fn evaluate_physical_device(
                     _ => 100,
                 };
                 //If multiple of same category, pick the one with a shared graphics and presentation queue
-                let shared_pres_graph_queue_score =
-                    if graphics_queue_index == present_queue_index {
-                        100
-                    } else {
-                        0
-                    };
-                let shared_transfer_queue_score =
-                    if transfer_queue_index == graphics_queue_index {
-                        0
-                    } else if transfer_queue_index == present_queue_index {
-                        50
-                    } else {
-                        100
-                    };
+                let shared_pres_graph_queue_score = if graphics_queue_index == present_queue_index {
+                    100
+                } else {
+                    0
+                };
+                let shared_transfer_queue_score = if transfer_queue_index == graphics_queue_index {
+                    0
+                } else if transfer_queue_index == present_queue_index {
+                    50
+                } else {
+                    100
+                };
 
-                let multisample_score = map_multisample_flag_to_sample_count(
-                    shared_max_sample_count,
-                );
+                let multisample_score =
+                    map_multisample_flag_to_sample_count(shared_max_sample_count);
 
-                let queue_score = shared_pres_graph_queue_score
-                    + shared_transfer_queue_score
-                    + multisample_score;
+                let queue_score =
+                    shared_pres_graph_queue_score + shared_transfer_queue_score + multisample_score;
                 ScoredPhysDev {
                     score: queue_score + device_type_score,
                     phys_dev,
@@ -1572,13 +1459,13 @@ const LIME: [f32; 4] = [0.514, 0.969, 0.333, 1.0];
 
 fn map_multisample_flag_to_sample_count(flag: SampleCountFlags) -> u64 {
     match flag {
-        SampleCountFlags::TYPE_1=>1,
-        SampleCountFlags::TYPE_2=>2,
+        SampleCountFlags::TYPE_1 => 1,
+        SampleCountFlags::TYPE_2 => 2,
         SampleCountFlags::TYPE_4 => 4,
         SampleCountFlags::TYPE_8 => 8,
-        SampleCountFlags::TYPE_16=> 16,
-        SampleCountFlags::TYPE_32=> 32,
-        SampleCountFlags::TYPE_64=> 64,
+        SampleCountFlags::TYPE_16 => 16,
+        SampleCountFlags::TYPE_32 => 32,
+        SampleCountFlags::TYPE_64 => 64,
         _ => panic!("You need to ensure you're passing *singular* flags to this function"),
     }
 }
@@ -1633,8 +1520,7 @@ impl GpuImage {
         graphics_queue_index: u32,
     ) -> Result<(Self, impl FenceProducer), LoadTextureFromFileError> {
         let image_file = std::io::BufReader::new(
-            std::fs::File::open(path.clone())
-                .map_err(|_| LoadTextureFromFileError::NoSuchFile)?,
+            std::fs::File::open(path.clone()).map_err(|_| LoadTextureFromFileError::NoSuchFile)?,
         );
         let image_buffer = image::load(image_file, image::ImageFormat::Png)
             .map_err(|_| LoadTextureFromFileError::InvalidTextureFile)?
@@ -1674,10 +1560,7 @@ impl GpuImage {
             .unwrap();
 
         //Convenient zero cast way to get a log2
-        let mip_levels = (image_buffer.width().max(image_buffer.height())
-            as f32)
-            .log2() as u32
-            + 1;
+        let mip_levels = (image_buffer.width().max(image_buffer.height()) as f32).log2() as u32 + 1;
 
         let image_create_info = ImageCreateInfo::default()
             .image_type(ImageType::TYPE_2D)
@@ -1721,8 +1604,8 @@ impl GpuImage {
             .base_array_layer(0)
             .layer_count(1);
 
-        let image_transfer_begin_info = CommandBufferBeginInfo::default()
-            .flags(CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+        let image_transfer_begin_info =
+            CommandBufferBeginInfo::default().flags(CommandBufferUsageFlags::ONE_TIME_SUBMIT);
 
         //Sets up image to be transfered into from the buffer
         let image_pre_load_barrier = ImageMemoryBarrier::default()
@@ -1798,8 +1681,7 @@ impl GpuImage {
                                 .label_name(&debug_label)
                                 .color(MAGENTA);
 
-                            debug_device
-                                .cmd_begin_debug_utils_label(cb, &debug_label);
+                            debug_device.cmd_begin_debug_utils_label(cb, &debug_label);
                         }
                         dev.cmd_pipeline_barrier(
                             cb,
@@ -1836,8 +1718,8 @@ impl GpuImage {
                 },
             )
             .map_err(|_| LoadTextureFromFileError::GpuUploadError)?;
-        let generate_mipmaps_begin_info = CommandBufferBeginInfo::default()
-            .flags(CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+        let generate_mipmaps_begin_info =
+            CommandBufferBeginInfo::default().flags(CommandBufferUsageFlags::ONE_TIME_SUBMIT);
         let mut mipmap_generate_command_buffer = graphics_command_pool
             .alloc_command_buffer(CommandBufferLevel::PRIMARY)
             .unwrap();
@@ -1892,10 +1774,7 @@ impl GpuImage {
                             .label_name(&label_name)
                             .color(YELLOW);
 
-                        unsafe {
-                            debug_device
-                                .cmd_begin_debug_utils_label(cb, &debug_label)
-                        };
+                        unsafe { debug_device.cmd_begin_debug_utils_label(cb, &debug_label) };
                     }
                     for mip_level in 1..mip_levels {
                         if let Some(debug_device) = device.debug_device_ref() {
@@ -1909,33 +1788,26 @@ impl GpuImage {
                             let debug_label = DebugUtilsLabelEXT::default()
                                 .label_name(&label_name)
                                 .color(CYAN);
-                            unsafe {
-                                debug_device.cmd_begin_debug_utils_label(
-                                    cb,
-                                    &debug_label,
-                                )
-                            };
+                            unsafe { debug_device.cmd_begin_debug_utils_label(cb, &debug_label) };
                         }
                         let prev_level = mip_level - 1;
 
-                        let current_level_range =
-                            ImageSubresourceRange::default()
-                                .aspect_mask(ImageAspectFlags::COLOR)
-                                .base_array_layer(0)
-                                .layer_count(1)
-                                .level_count(1)
-                                .base_mip_level(mip_level);
+                        let current_level_range = ImageSubresourceRange::default()
+                            .aspect_mask(ImageAspectFlags::COLOR)
+                            .base_array_layer(0)
+                            .layer_count(1)
+                            .level_count(1)
+                            .base_mip_level(mip_level);
 
-                        let current_layer_preblit_barrier =
-                            ImageMemoryBarrier::default()
-                                .image(gpu_image.inner)
-                                .src_queue_family_index(QUEUE_FAMILY_IGNORED)
-                                .dst_queue_family_index(QUEUE_FAMILY_IGNORED)
-                                .old_layout(ImageLayout::UNDEFINED)
-                                .new_layout(ImageLayout::TRANSFER_DST_OPTIMAL)
-                                .src_access_mask(AccessFlags::empty())
-                                .dst_access_mask(AccessFlags::TRANSFER_WRITE)
-                                .subresource_range(current_level_range);
+                        let current_layer_preblit_barrier = ImageMemoryBarrier::default()
+                            .image(gpu_image.inner)
+                            .src_queue_family_index(QUEUE_FAMILY_IGNORED)
+                            .dst_queue_family_index(QUEUE_FAMILY_IGNORED)
+                            .old_layout(ImageLayout::UNDEFINED)
+                            .new_layout(ImageLayout::TRANSFER_DST_OPTIMAL)
+                            .src_access_mask(AccessFlags::empty())
+                            .dst_access_mask(AccessFlags::TRANSFER_WRITE)
+                            .subresource_range(current_level_range);
 
                         image_barriers.clear();
                         image_barriers.push(current_layer_preblit_barrier);
@@ -1943,27 +1815,22 @@ impl GpuImage {
                             image_barriers.push(b)
                         }
 
-                        let prev_level_layer =
-                            ImageSubresourceLayers::default()
-                                .aspect_mask(ImageAspectFlags::COLOR)
-                                .mip_level(mip_level - 1)
-                                .base_array_layer(0)
-                                .layer_count(1);
+                        let prev_level_layer = ImageSubresourceLayers::default()
+                            .aspect_mask(ImageAspectFlags::COLOR)
+                            .mip_level(mip_level - 1)
+                            .base_array_layer(0)
+                            .layer_count(1);
                         let mip_level_layer = ImageSubresourceLayers::default()
                             .aspect_mask(ImageAspectFlags::COLOR)
                             .mip_level(mip_level)
                             .base_array_layer(0)
                             .layer_count(1);
-                        let prev_level_width =
-                            image_buffer.width() / 2u32.pow(prev_level);
-                        let prev_level_height =
-                            image_buffer.height() / 2u32.pow(prev_level);
+                        let prev_level_width = image_buffer.width() / 2u32.pow(prev_level);
+                        let prev_level_height = image_buffer.height() / 2u32.pow(prev_level);
 
-                        let mip_level_height = (image_buffer.height()
-                            / 2_u32.pow(mip_level))
-                        .max(1);
-                        let mip_level_width =
-                            (image_buffer.width() / 2u32.pow(mip_level)).max(1);
+                        let mip_level_height =
+                            (image_buffer.height() / 2_u32.pow(mip_level)).max(1);
+                        let mip_level_width = (image_buffer.width() / 2u32.pow(mip_level)).max(1);
                         let blit_info = ImageBlit::default()
                             .src_offsets([
                                 Offset3D { x: 0, y: 0, z: 0 },
@@ -2012,22 +1879,19 @@ impl GpuImage {
                         );
 
                         if let Some(debug_device) = device.debug_device_ref() {
-                            unsafe {
-                                debug_device.cmd_end_debug_utils_label(cb)
-                            };
+                            unsafe { debug_device.cmd_end_debug_utils_label(cb) };
                         }
                     }
 
-                    let whole_image_but_last_level_range =
-                        ImageSubresourceRange::default()
-                            .aspect_mask(ImageAspectFlags::COLOR)
-                            .base_array_layer(0)
-                            .base_mip_level(0)
-                            .layer_count(1)
-                            //If there's only one mip level, prev_image_barrier
-                            //will be None. Otherwise, that barrier will handle
-                            //that mip level
-                            .level_count((mip_levels - 1).max(1));
+                    let whole_image_but_last_level_range = ImageSubresourceRange::default()
+                        .aspect_mask(ImageAspectFlags::COLOR)
+                        .base_array_layer(0)
+                        .base_mip_level(0)
+                        .layer_count(1)
+                        //If there's only one mip level, prev_image_barrier
+                        //will be None. Otherwise, that barrier will handle
+                        //that mip level
+                        .level_count((mip_levels - 1).max(1));
 
                     let final_image_barrier = ImageMemoryBarrier::default()
                         .src_access_mask(AccessFlags::TRANSFER_READ)
@@ -2186,8 +2050,7 @@ impl TextureSampler {
         sampler_ci: &SamplerCreateInfo,
         debug_string: Option<String>,
     ) -> VkResult<Self> {
-        let inner =
-            unsafe { device.as_inner_ref().create_sampler(sampler_ci, None) }?;
+        let inner = unsafe { device.as_inner_ref().create_sampler(sampler_ci, None) }?;
         associate_debug_name!(device, inner, debug_string);
         Ok(Self {
             parent: device.clone(),

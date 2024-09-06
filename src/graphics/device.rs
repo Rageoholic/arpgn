@@ -22,8 +22,8 @@ use std::{
 use ash::{
     prelude::VkResult,
     vk::{
-        DebugUtilsObjectNameInfoEXT, DeviceCreateInfo, Fence, Handle,
-        PhysicalDevice, Queue, Result as RawVkResult, SubmitInfo,
+        DebugUtilsObjectNameInfoEXT, DeviceCreateInfo, Fence, Handle, PhysicalDevice, Queue,
+        Result as RawVkResult, SubmitInfo,
     },
 };
 
@@ -79,24 +79,18 @@ impl Device {
     ) -> VkResult<Self> {
         //SAFETY: valid ci. phys_dev derived from instance. Preconditions of
         //this unsafe function
-        let inner = unsafe {
-            instance.as_inner_ref().create_device(phys_dev, ci, None)
-        }?;
+        let inner = unsafe { instance.as_inner_ref().create_device(phys_dev, ci, None) }?;
 
         //SAFETY: Must be safe if this is a valid ci
         let queue_cis = unsafe {
-            slice::from_raw_parts(
-                ci.p_queue_create_infos,
-                ci.queue_create_info_count as usize,
-            )
+            slice::from_raw_parts(ci.p_queue_create_infos, ci.queue_create_info_count as usize)
         };
         let mut queue_families = HashMap::with_capacity(queue_cis.len());
 
         for queue_ci in queue_cis {
             let family = queue_ci.queue_family_index;
             let family_queue_count = queue_ci.queue_count;
-            let mut queue_family_queues =
-                Vec::with_capacity(family_queue_count as usize);
+            let mut queue_family_queues = Vec::with_capacity(family_queue_count as usize);
             for i in 0..family_queue_count {
                 queue_family_queues.push(Mutex::new(
                     //SAFETY: We know these queues exist cause we're
@@ -107,26 +101,19 @@ impl Device {
 
             queue_families.insert(family, queue_family_queues);
         }
-        let allocator_ci = vk_mem::AllocatorCreateInfo::new(
-            instance.as_inner_ref(),
-            &inner,
-            phys_dev,
-        );
+        let allocator_ci =
+            vk_mem::AllocatorCreateInfo::new(instance.as_inner_ref(), &inner, phys_dev);
         let allocator =
             //SAFETY: Valid ci
             ManuallyDrop::new(unsafe { vk_mem::Allocator::new(allocator_ci) }?);
         let debug_utils_device = instance.is_debug().then(|| {
-            let debug_device = ash::ext::debug_utils::Device::new(
-                instance.as_inner_ref(),
-                &inner,
-            );
+            let debug_device = ash::ext::debug_utils::Device::new(instance.as_inner_ref(), &inner);
             if let Some(dn) = debug_name {
                 let debug_name = CString::new(dn).unwrap();
                 let name_info = DebugUtilsObjectNameInfoEXT::default()
                     .object_handle(inner.handle())
                     .object_name(&debug_name);
-                unsafe { debug_device.set_debug_utils_object_name(&name_info) }
-                    .unwrap();
+                unsafe { debug_device.set_debug_utils_object_name(&name_info) }.unwrap();
             }
 
             debug_device
@@ -154,9 +141,7 @@ impl Device {
         self.queue_families
             .get(&family_index)
             .and_then(|queues| queues.get(queue_index as usize))
-            .map(|locked_queue| {
-                locked_queue.lock().unwrap_or_else(|p| p.into_inner())
-            })
+            .map(|locked_queue| locked_queue.lock().unwrap_or_else(|p| p.into_inner()))
             .ok_or(QueueRetrievalError::NoSuchQueue)
     }
 
@@ -182,8 +167,7 @@ impl Device {
         // thread can be submitting at a time. We ensure 1 and 2 via our own
         // preconditions and we ensure 3 by ensuring that this is the only place
         // where you can submit to a queue.
-        unsafe { self.inner.queue_submit(*lock, submits, fence) }
-            .map_err(QueueSubmitError::Vulkan)
+        unsafe { self.inner.queue_submit(*lock, submits, fence) }.map_err(QueueSubmitError::Vulkan)
     }
     pub(super) fn get_physical_device_handle(&self) -> PhysicalDevice {
         self.phys_dev
@@ -206,14 +190,11 @@ impl Device {
         unsafe { self.inner.device_wait_idle() }
     }
 
-    pub fn associate_debug_name(
-        &self,
-        name_info: &DebugUtilsObjectNameInfoEXT,
-    ) {
+    pub fn associate_debug_name(&self, name_info: &DebugUtilsObjectNameInfoEXT) {
         unsafe {
-            self.debug_utils_device.as_ref().map(|debug| {
-                debug.set_debug_utils_object_name(name_info).unwrap()
-            })
+            self.debug_utils_device
+                .as_ref()
+                .map(|debug| debug.set_debug_utils_object_name(name_info).unwrap())
         };
     }
 }

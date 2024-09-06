@@ -15,9 +15,8 @@ use std::{fmt::Debug, sync::Arc};
 use ash::{
     prelude::VkResult,
     vk::{
-        DebugUtilsMessengerCreateInfoEXT, ExtensionProperties, Handle,
-        InstanceCreateInfo, PhysicalDevice, PhysicalDeviceFeatures,
-        PhysicalDeviceProperties, QueueFamilyProperties,
+        DebugUtilsMessengerCreateInfoEXT, ExtensionProperties, Handle, InstanceCreateInfo,
+        PhysicalDevice, PhysicalDeviceFeatures, PhysicalDeviceProperties, QueueFamilyProperties,
     },
     Entry,
 };
@@ -51,10 +50,7 @@ impl Instance {
         self.debug.is_some()
     }
     //SAFETY REQUIREMENTS: Must provide a valid ci
-    pub(super) unsafe fn new(
-        entry: &Arc<Entry>,
-        ci: &InstanceCreateInfo,
-    ) -> VkResult<Self> {
+    pub(super) unsafe fn new(entry: &Arc<Entry>, ci: &InstanceCreateInfo) -> VkResult<Self> {
         //SAFETY: valid ci. From function safety requirements
         unsafe { entry.create_instance(ci, None) }.map(|inner| Self {
             inner,
@@ -62,10 +58,7 @@ impl Instance {
             debug: None,
         })
     }
-    pub unsafe fn init_debug_messenger(
-        &mut self,
-        ci: &DebugUtilsMessengerCreateInfoEXT,
-    ) {
+    pub unsafe fn init_debug_messenger(&mut self, ci: &DebugUtilsMessengerCreateInfoEXT) {
         self.debug = unsafe { DebugMessenger::new(self, ci) }.ok();
     }
 
@@ -94,10 +87,8 @@ impl Instance {
             //SAFETY: phys_dev from self
             unsafe { self.inner.get_physical_device_features(phys_dev) };
         //SAFETY: phys_dev_from self
-        let extensions = unsafe {
-            self.inner.enumerate_device_extension_properties(phys_dev)
-        }
-        .unwrap();
+        let extensions =
+            unsafe { self.inner.enumerate_device_extension_properties(phys_dev) }.unwrap();
         //SAFETY: phys_dev from self
         let queue_families = unsafe {
             self.inner

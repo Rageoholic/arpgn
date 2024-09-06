@@ -10,8 +10,8 @@ use std::sync::Arc;
 use ash::{
     prelude::VkResult,
     vk::{
-        Handle, PhysicalDevice, PresentModeKHR, SurfaceCapabilitiesKHR,
-        SurfaceFormatKHR, SurfaceKHR,
+        Handle, PhysicalDevice, PresentModeKHR, SurfaceCapabilitiesKHR, SurfaceFormatKHR,
+        SurfaceKHR,
     },
 };
 use winit::{
@@ -61,10 +61,8 @@ impl Surface {
             )
         }?;
 
-        let surface_instance = ash::khr::surface::Instance::new(
-            instance.parent(),
-            instance.as_inner_ref(),
-        );
+        let surface_instance =
+            ash::khr::surface::Instance::new(instance.parent(), instance.as_inner_ref());
 
         Ok(Self {
             surface,
@@ -99,10 +97,7 @@ impl Surface {
         //SAFETY: phys_dev is derived from same parent instance as surface
         let capabilities = unsafe {
             self.surface_instance
-                .get_physical_device_surface_capabilities(
-                    phys_dev,
-                    self.surface,
-                )
+                .get_physical_device_surface_capabilities(phys_dev, self.surface)
         }?;
         //SAFETY: phys_dev is derived from same parent instance as surface
         let formats = unsafe {
@@ -113,10 +108,7 @@ impl Surface {
         //SAFETY: phys_dev is derived from same parent instance as surface
         let present_modes = unsafe {
             self.surface_instance
-                .get_physical_device_surface_present_modes(
-                    phys_dev,
-                    self.surface,
-                )?
+                .get_physical_device_surface_present_modes(phys_dev, self.surface)?
         };
 
         Ok(SwapchainInfo {

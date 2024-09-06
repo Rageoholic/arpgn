@@ -36,9 +36,8 @@ impl PipelineLayout {
         ci: &PipelineLayoutCreateInfo,
         debug_name: Option<String>,
     ) -> VkResult<Self> {
-        let inner =
-            // SAFETY: valid ci. Preconditions of this unsafe function
-            unsafe { device.as_inner_ref().create_pipeline_layout(ci, None) }?;
+        // SAFETY: valid ci. Preconditions of this unsafe function
+        let inner = unsafe { device.as_inner_ref().create_pipeline_layout(ci, None) }?;
         associate_debug_name!(device, inner, debug_name);
         Ok(Self {
             inner,

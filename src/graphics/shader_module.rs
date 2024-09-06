@@ -15,8 +15,8 @@ use std::{
 };
 
 use ash::vk::{
-    Result as RawVkResult, ShaderModule as RawShaderModule,
-    ShaderModuleCreateInfo, ShaderStageFlags,
+    Result as RawVkResult, ShaderModule as RawShaderModule, ShaderModuleCreateInfo,
+    ShaderStageFlags,
 };
 use shaderc::ShaderKind;
 
@@ -88,14 +88,13 @@ impl ShaderModule {
         let inner = {
             let ci = ShaderModuleCreateInfo::default().code(spirv.as_binary());
             //SAFETY: Passing valid code to the ci. Shaderc's job
-            unsafe { device.as_inner_ref().create_shader_module(&ci, None) }
-                .map_err(|err| match err {
+            unsafe { device.as_inner_ref().create_shader_module(&ci, None) }.map_err(
+                |err| match err {
                     RawVkResult::ERROR_OUT_OF_HOST_MEMORY
-                    | RawVkResult::ERROR_OUT_OF_DEVICE_MEMORY => {
-                        MemoryExhaustion
-                    }
+                    | RawVkResult::ERROR_OUT_OF_DEVICE_MEMORY => MemoryExhaustion,
                     _ => unreachable!(),
-                })
+                },
+            )
         }?;
 
         associate_debug_name!(device, inner, debug_name);

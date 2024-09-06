@@ -32,18 +32,14 @@ impl Pipeline {
     ) -> VkResult<Vec<Self>> {
         //SAFETY: Valid cis
         let inners = unsafe {
-            device.as_inner_ref().create_graphics_pipelines(
-                PipelineCache::null(),
-                ci,
-                None,
-            )
+            device
+                .as_inner_ref()
+                .create_graphics_pipelines(PipelineCache::null(), ci, None)
         }
         .map_err(|(pipelines, result)| {
             for pipeline in pipelines {
                 //SAFETY: Never going to use these
-                unsafe {
-                    device.as_inner_ref().destroy_pipeline(pipeline, None)
-                }
+                unsafe { device.as_inner_ref().destroy_pipeline(pipeline, None) }
             }
             result
         })?;

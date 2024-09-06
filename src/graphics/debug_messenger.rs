@@ -47,16 +47,13 @@ impl DebugMessenger {
         parent_instance: &Instance,
         ci: &DebugUtilsMessengerCreateInfoEXT,
     ) -> VkResult<Self> {
-        let debug_utils_instance = debug_utils::Instance::new(
-            parent_instance.parent(),
-            parent_instance.as_inner_ref(),
-        );
+        let debug_utils_instance =
+            debug_utils::Instance::new(parent_instance.parent(), parent_instance.as_inner_ref());
         //SAFETY: valid ci. We know because precondition of this unsafe function
-        unsafe { debug_utils_instance.create_debug_utils_messenger(ci, None) }
-            .map(|inner| Self {
-                inner,
-                instance: debug_utils_instance,
-            })
+        unsafe { debug_utils_instance.create_debug_utils_messenger(ci, None) }.map(|inner| Self {
+            inner,
+            instance: debug_utils_instance,
+        })
     }
 
     //This is useful and I don't want the compiler whining at me
@@ -67,8 +64,7 @@ impl DebugMessenger {
         message_types: DebugUtilsMessageTypeFlagsEXT,
         message: &CStr,
     ) {
-        let callback_data =
-            DebugUtilsMessengerCallbackDataEXT::default().message(message);
+        let callback_data = DebugUtilsMessengerCallbackDataEXT::default().message(message);
         //SAFETY: We made callback_data ourselves
         unsafe {
             self.instance.submit_debug_utils_message(
@@ -144,19 +140,11 @@ pub(super) unsafe extern "system" fn default_debug_callback(
     0
 }
 
-fn debug_utils_message_type_to_str(
-    message_type: DebugUtilsMessageTypeFlagsEXT,
-) -> &'static str {
+fn debug_utils_message_type_to_str(message_type: DebugUtilsMessageTypeFlagsEXT) -> &'static str {
     match message_type {
-        DebugUtilsMessageTypeFlagsEXT::GENERAL => {
-            "graphics_subsystem.debug_utils.general"
-        }
-        DebugUtilsMessageTypeFlagsEXT::PERFORMANCE => {
-            "graphics_subsystem.debug_utils.perf"
-        }
-        DebugUtilsMessageTypeFlagsEXT::VALIDATION => {
-            "graphics_subsystem.debug_utils.validation"
-        }
+        DebugUtilsMessageTypeFlagsEXT::GENERAL => "graphics_subsystem.debug_utils.general",
+        DebugUtilsMessageTypeFlagsEXT::PERFORMANCE => "graphics_subsystem.debug_utils.perf",
+        DebugUtilsMessageTypeFlagsEXT::VALIDATION => "graphics_subsystem.debug_utils.validation",
         DebugUtilsMessageTypeFlagsEXT::DEVICE_ADDRESS_BINDING => {
             "graphics_subsystem.debug_utils.device_address_binding"
         }

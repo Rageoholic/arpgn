@@ -10,11 +10,10 @@ use std::{cmp::min, sync::Arc};
 use ash::{
     prelude::VkResult,
     vk::{
-        ColorSpaceKHR, ComponentMapping, CompositeAlphaFlagsKHR, Extent2D,
-        Format, Framebuffer as RawFramebuffer, FramebufferCreateInfo,
-        ImageAspectFlags, ImageSubresourceRange, ImageUsageFlags, ImageView,
-        ImageViewCreateInfo, ImageViewType, Offset2D, PresentInfoKHR,
-        PresentModeKHR, Rect2D, SharingMode, SurfaceFormatKHR,
+        ColorSpaceKHR, ComponentMapping, CompositeAlphaFlagsKHR, Extent2D, Format,
+        Framebuffer as RawFramebuffer, FramebufferCreateInfo, ImageAspectFlags,
+        ImageSubresourceRange, ImageUsageFlags, ImageView, ImageViewCreateInfo, ImageViewType,
+        Offset2D, PresentInfoKHR, PresentModeKHR, Rect2D, SharingMode, SurfaceFormatKHR,
         SwapchainCreateInfoKHR, SwapchainKHR, Viewport,
     },
 };
@@ -62,11 +61,8 @@ impl Swapchain {
         debug_name: Option<String>,
     ) -> VkResult<Self> {
         //SAFETY: surface and device are created from the same instance
-        let swap_info = unsafe {
-            surface.get_compatible_swapchain_info(
-                device.get_physical_device_handle(),
-            )
-        }?;
+        let swap_info =
+            unsafe { surface.get_compatible_swapchain_info(device.get_physical_device_handle()) }?;
         let format = swap_info
             .formats
             .iter()
@@ -93,21 +89,20 @@ impl Swapchain {
             .unwrap_or(PresentModeKHR::FIFO);
         let win_size = surface.get_size();
 
-        let swap_extent =
-            if swap_info.capabilities.current_extent.width != u32::MAX {
-                swap_info.capabilities.current_extent
-            } else {
-                Extent2D {
-                    width: win_size.width.clamp(
-                        swap_info.capabilities.min_image_extent.width,
-                        swap_info.capabilities.max_image_extent.width,
-                    ),
-                    height: win_size.height.clamp(
-                        swap_info.capabilities.min_image_extent.height,
-                        swap_info.capabilities.max_image_extent.height,
-                    ),
-                }
-            };
+        let swap_extent = if swap_info.capabilities.current_extent.width != u32::MAX {
+            swap_info.capabilities.current_extent
+        } else {
+            Extent2D {
+                width: win_size.width.clamp(
+                    swap_info.capabilities.min_image_extent.width,
+                    swap_info.capabilities.max_image_extent.width,
+                ),
+                height: win_size.height.clamp(
+                    swap_info.capabilities.min_image_extent.height,
+                    swap_info.capabilities.max_image_extent.height,
+                ),
+            }
+        };
 
         let image_count = min(
             swap_info.capabilities.min_image_count + 1,
@@ -146,19 +141,15 @@ impl Swapchain {
                     .unwrap_or(SwapchainKHR::null()),
             );
 
-        let swapchain_device = ash::khr::swapchain::Device::new(
-            device.parent().as_inner_ref(),
-            device.as_inner_ref(),
-        );
+        let swapchain_device =
+            ash::khr::swapchain::Device::new(device.parent().as_inner_ref(), device.as_inner_ref());
 
         //SAFETY: Valid ci. Known because we did it
         let inner = unsafe { swapchain_device.create_swapchain(&ci, None) }?;
         let dn = debug_name.clone();
         associate_debug_name!(device, inner, dn);
 
-        let swapchain_images =
-            //SAFETY: Should always be good
-            unsafe { swapchain_device.get_swapchain_images(inner) }
+        let swapchain_images = unsafe { swapchain_device.get_swapchain_images(inner) }
             .expect("Got a swapchain with no images?");
 
         let mut image_views = Vec::with_capacity(swapchain_images.len());
@@ -241,23 +232,19 @@ impl Swapchain {
         self: &Arc<Self>,
         compatible_renderpass: &RenderPass,
         msaa_color_attachments: Option<Vec<super::GpuImageView>>,
-        mut f: Option<
-            impl FnMut(usize, ash::vk::Framebuffer) -> Option<String>,
-        >,
+        mut f: Option<impl FnMut(usize, ash::vk::Framebuffer) -> Option<String>>,
     ) -> VkResult<Vec<SwapchainFramebuffer>> {
         if let Some(ref a) = msaa_color_attachments {
             assert!(a.len() == self.image_views.len())
         }
-        let mut msaa_color_attachments =
-            msaa_color_attachments.into_iter().flatten();
+        let mut msaa_color_attachments = msaa_color_attachments.into_iter().flatten();
         let mut framebuffers = Vec::with_capacity(self.image_views.len());
         for (i, iv) in self.image_views.iter().copied().enumerate() {
             let mut attachments = Vec::with_capacity(2);
-            let opt_color_attachment =
-                msaa_color_attachments.next().map(|iv| {
-                    attachments.push(iv.inner);
-                    iv
-                });
+            let opt_color_attachment = msaa_color_attachments.next().map(|iv| {
+                attachments.push(iv.inner);
+                iv
+            });
             attachments.push(iv);
             let framebuffer_ci = FramebufferCreateInfo::default()
                 .render_pass(compatible_renderpass.get_inner())
@@ -273,14 +260,9 @@ impl Swapchain {
             }?;
             if let Some(ref mut f) = f {
                 let debug_name = f(i, framebuffer);
-                associate_debug_name!(
-                    self.parent_device,
-                    framebuffer,
-                    debug_name
-                );
+                associate_debug_name!(self.parent_device, framebuffer, debug_name);
             }
             framebuffers.push(SwapchainFramebuffer {
-                //SAFETY: valid ci
                 inner: framebuffer,
                 parent: self.clone(),
                 index: i,

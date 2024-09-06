@@ -2,10 +2,7 @@ use std::{ffi::CString, sync::Arc};
 
 use ash::{
     prelude::VkResult,
-    vk::{
-        DebugUtilsObjectNameInfoEXT, FenceCreateFlags, FenceCreateInfo,
-        SemaphoreCreateInfo,
-    },
+    vk::{DebugUtilsObjectNameInfoEXT, FenceCreateFlags, FenceCreateInfo, SemaphoreCreateInfo},
 };
 
 use crate::graphics::utils::associate_debug_name;
@@ -29,13 +26,9 @@ impl Drop for Semaphore {
 }
 
 impl Semaphore {
-    pub fn new(
-        device: &Arc<Device>,
-        debug_name: Option<String>,
-    ) -> VkResult<Self> {
+    pub fn new(device: &Arc<Device>, debug_name: Option<String>) -> VkResult<Self> {
         let ci = SemaphoreCreateInfo::default();
-        let inner =
-            unsafe { device.as_inner_ref().create_semaphore(&ci, None)? };
+        let inner = unsafe { device.as_inner_ref().create_semaphore(&ci, None)? };
 
         associate_debug_name!(device, inner, debug_name);
         Ok(Self {
@@ -62,11 +55,7 @@ impl Drop for Fence {
 }
 
 impl Fence {
-    pub fn new(
-        device: &Arc<Device>,
-        signaled: bool,
-        debug_name: Option<String>,
-    ) -> VkResult<Self> {
+    pub fn new(device: &Arc<Device>, signaled: bool, debug_name: Option<String>) -> VkResult<Self> {
         let ci = FenceCreateInfo::default().flags(if signaled {
             FenceCreateFlags::SIGNALED
         } else {
@@ -81,7 +70,6 @@ impl Fence {
             device.associate_debug_name(&name_info);
         }
         Ok(Self {
-            //SAFETY: Valid ci
             inner,
             parent: device.clone(),
         })
@@ -94,11 +82,9 @@ impl Fence {
         let fences = &[self.inner];
         //SAFETY: Fence is known to come from device
         unsafe {
-            self.parent.as_inner_ref().wait_for_fences(
-                fences,
-                false,
-                u64::MAX,
-            )?;
+            self.parent
+                .as_inner_ref()
+                .wait_for_fences(fences, false, u64::MAX)?;
             self.parent.as_inner_ref().reset_fences(fences)
         }
     }

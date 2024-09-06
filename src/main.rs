@@ -37,8 +37,7 @@ impl ApplicationHandler for App {
                 event_loop,
                 graphics::ContextCreateOpts {
                     graphics_validation_layers: opts.graphics_validation_level,
-                    shared_transfer_graphics_queue: opts
-                        .unified_graphics_transfer_queue,
+                    shared_transfer_graphics_queue: opts.unified_graphics_transfer_queue,
                     ..Default::default()
                 },
             ) {
@@ -68,9 +67,7 @@ impl ApplicationHandler for App {
                     WindowEvent::RedrawRequested => {
                         graphics_context.draw();
                     }
-                    WindowEvent::Resized(intended_size) => {
-                        graphics_context.resize(intended_size)
-                    }
+                    WindowEvent::Resized(intended_size) => graphics_context.resize(intended_size),
 
                     _ => {}
                 }

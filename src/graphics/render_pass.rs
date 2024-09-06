@@ -1,9 +1,6 @@
 use std::sync::Arc;
 
-use ash::{
-    prelude::VkResult, vk::RenderPass as RawRenderPass,
-    vk::RenderPassCreateInfo,
-};
+use ash::{prelude::VkResult, vk::RenderPass as RawRenderPass, vk::RenderPassCreateInfo};
 
 use super::{device::Device, utils::associate_debug_name};
 
