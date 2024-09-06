@@ -221,6 +221,13 @@ impl Swapchain {
             extent: self.extent,
         }
     }
+    pub fn width(&self) -> u32 {
+        self.extent.width
+    }
+
+    pub fn height(&self) -> u32 {
+        self.extent.height
+    }
 
     pub fn get_aspect_ratio(&self) -> f32 {
         self.extent.width as f32 / self.extent.height as f32
@@ -233,16 +240,28 @@ impl Swapchain {
     pub fn create_compatible_framebuffers(
         self: &Arc<Self>,
         compatible_renderpass: &RenderPass,
+        msaa_color_attachments: Option<Vec<super::GpuImageView>>,
         mut f: Option<
             impl FnMut(usize, ash::vk::Framebuffer) -> Option<String>,
         >,
     ) -> VkResult<Vec<SwapchainFramebuffer>> {
+        if let Some(ref a) = msaa_color_attachments {
+            assert!(a.len() == self.image_views.len())
+        }
+        let mut msaa_color_attachments =
+            msaa_color_attachments.into_iter().flatten();
         let mut framebuffers = Vec::with_capacity(self.image_views.len());
         for (i, iv) in self.image_views.iter().copied().enumerate() {
-            let attachments = &[iv];
+            let mut attachments = Vec::with_capacity(2);
+            let opt_color_attachment =
+                msaa_color_attachments.next().map(|iv| {
+                    attachments.push(iv.inner);
+                    iv
+                });
+            attachments.push(iv);
             let framebuffer_ci = FramebufferCreateInfo::default()
                 .render_pass(compatible_renderpass.get_inner())
-                .attachments(attachments)
+                .attachments(&attachments)
                 .width(self.extent.width)
                 .height(self.extent.height)
                 .layers(1);
@@ -265,6 +284,7 @@ impl Swapchain {
                 inner: framebuffer,
                 parent: self.clone(),
                 index: i,
+                _opt_color_attachment: opt_color_attachment,
             });
         }
 
@@ -290,6 +310,9 @@ impl Swapchain {
             )
         }
     }
+    pub fn image_count(&self) -> u32 {
+        self.image_views.len() as u32
+    }
 }
 
 impl Drop for Swapchain {
@@ -313,6 +336,7 @@ pub struct SwapchainFramebuffer {
     inner: RawFramebuffer,
     parent: Arc<Swapchain>,
     index: usize,
+    _opt_color_attachment: Option<super::GpuImageView>,
 }
 impl SwapchainFramebuffer {
     pub(crate) fn get_inner(&self) -> RawFramebuffer {

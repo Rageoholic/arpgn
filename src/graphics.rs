@@ -1,6 +1,6 @@
 use std::{
     collections::HashSet,
-    ffi::CStr,
+    ffi::{CStr, CString},
     fmt::{Debug, Display},
     marker::PhantomData,
     mem::{offset_of, size_of, size_of_val},
@@ -14,13 +14,13 @@ use std::{
 use ash::{
     prelude::VkResult,
     vk::{
-        api_version_major, api_version_minor, api_version_patch, AccessFlags,
-        ApplicationInfo, AttachmentDescription, AttachmentLoadOp,
+        self, api_version_major, api_version_minor, api_version_patch,
+        AccessFlags, ApplicationInfo, AttachmentDescription, AttachmentLoadOp,
         AttachmentReference, AttachmentStoreOp, BlendFactor, BorderColor,
         BufferCreateInfo, BufferImageCopy, BufferUsageFlags, ClearColorValue,
         ClearValue, ColorComponentFlags, CommandBufferBeginInfo,
         CommandBufferLevel, CommandBufferUsageFlags, CommandPoolCreateFlags,
-        CommandPoolCreateInfo, CompareOp, CullModeFlags,
+        CommandPoolCreateInfo, CompareOp, CullModeFlags, DebugUtilsLabelEXT,
         DebugUtilsMessageSeverityFlagsEXT, DebugUtilsMessageTypeFlagsEXT,
         DebugUtilsMessengerCreateInfoEXT, DependencyFlags,
         DescriptorBufferInfo, DescriptorImageInfo, DescriptorPoolCreateInfo,
@@ -28,11 +28,12 @@ use ash::{
         DescriptorSetLayoutBinding, DescriptorSetLayoutCreateInfo,
         DescriptorType, DeviceCreateInfo, DeviceQueueCreateInfo, Extent3D,
         Filter, Format, FrontFace, GraphicsPipelineCreateInfo,
-        ImageAspectFlags, ImageCreateInfo, ImageLayout, ImageMemoryBarrier,
-        ImageSubresourceLayers, ImageSubresourceRange, ImageTiling, ImageType,
-        ImageUsageFlags, ImageView, ImageViewCreateInfo, ImageViewType,
-        IndexType, InstanceCreateInfo, LogicOp, MemoryPropertyFlags, Offset3D,
-        PhysicalDevice, PhysicalDeviceType, PipelineBindPoint,
+        ImageAspectFlags, ImageBlit, ImageCreateInfo, ImageLayout,
+        ImageMemoryBarrier, ImageSubresourceLayers, ImageSubresourceRange,
+        ImageTiling, ImageType, ImageUsageFlags, ImageView,
+        ImageViewCreateInfo, ImageViewType, IndexType, InstanceCreateInfo,
+        LogicOp, MemoryPropertyFlags, Offset3D, PhysicalDevice,
+        PhysicalDeviceType, PipelineBindPoint,
         PipelineColorBlendAttachmentState, PipelineColorBlendStateCreateInfo,
         PipelineInputAssemblyStateCreateInfo, PipelineLayoutCreateInfo,
         PipelineMultisampleStateCreateInfo,
@@ -49,7 +50,7 @@ use ash::{
     LoadingError,
 };
 use buffers::ManagedMappableBuffer;
-use command_buffers::CommandPool;
+use command_buffers::{CommandBuffer, CommandPool};
 use descriptor_sets::{DescriptorPool, DescriptorSet, DescriptorSetLayout};
 use device::Device;
 use instance::Instance;
@@ -68,7 +69,7 @@ use utils::{associate_debug_name, debug_name};
 use vek::{Mat4, Vec2, Vec3};
 use vk_mem::{Alloc, AllocationCreateFlags};
 use winit::{
-    dpi::{LogicalSize, Size},
+    dpi::{LogicalSize, PhysicalSize, Size},
     event_loop::ActiveEventLoop,
     raw_window_handle::HasDisplayHandle,
     window::{Window, WindowAttributes, WindowId},
@@ -192,7 +193,7 @@ pub struct Context {
     index_buffers: Vec<ManagedMappableBuffer<u16>>,
     image_available_semaphores: Vec<Semaphore>,
     prev_frame_finished_fences: Vec<Fence>,
-    sync_index: usize,
+    frame_index: usize,
     render_complete_semaphores: Vec<Semaphore>,
     graphics_queue_index: u32,
     present_queue_index: u32,
@@ -203,6 +204,8 @@ pub struct Context {
     start_time: Instant,
     _gpu_image_view: GpuImageView,
     _texture_sampler: TextureSampler,
+    multisample_flag: SampleCountFlags,
+    minimized: bool,
 }
 
 #[derive(Debug, Default)]
@@ -232,6 +235,7 @@ struct SurfaceDerived {
     render_pass: RenderPass,
 }
 impl SurfaceDerived {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         device: &Arc<Device>,
         surface: Arc<Surface>,
@@ -239,6 +243,7 @@ impl SurfaceDerived {
         present_queue_index: u32,
         shader_modules: &[&ShaderModule],
         pipeline_layout: &PipelineLayout,
+        multisample_flag: SampleCountFlags,
         old_swapchain: Option<&Arc<Swapchain>>,
     ) -> Result<Self, RenderSetupError> {
         use RenderSetupError::*;
@@ -260,25 +265,112 @@ impl SurfaceDerived {
         let scissors = [swapchain.as_rect()];
         let color_attachment = AttachmentDescription::default()
             .format(swapchain.get_format())
-            .samples(SampleCountFlags::TYPE_1)
+            .samples(multisample_flag)
             .load_op(AttachmentLoadOp::CLEAR)
             .store_op(AttachmentStoreOp::STORE)
             .stencil_load_op(AttachmentLoadOp::DONT_CARE)
             .stencil_store_op(AttachmentStoreOp::DONT_CARE)
             .initial_layout(ImageLayout::UNDEFINED)
-            .final_layout(ImageLayout::PRESENT_SRC_KHR);
+            .final_layout(ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
+        let color_resolve_attachment = vk::AttachmentDescription::default()
+            .format(swapchain.get_format())
+            .samples(vk::SampleCountFlags::TYPE_1)
+            .load_op(vk::AttachmentLoadOp::DONT_CARE)
+            .store_op(vk::AttachmentStoreOp::STORE)
+            .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
+            .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
+            .initial_layout(vk::ImageLayout::UNDEFINED)
+            .final_layout(vk::ImageLayout::PRESENT_SRC_KHR);
 
-        let color_attachment_ref: AttachmentReference =
-            AttachmentReference::default()
-                .attachment(0)
-                .layout(ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
+        let color_attachment_ref = AttachmentReference::default()
+            .attachment(0)
+            .layout(ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
+
+        let color_resolve_attachment_ref = AttachmentReference::default()
+            .attachment(1)
+            .layout(ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
 
         let color_attachments = &[color_attachment_ref];
+        let resolve_attachments = &[color_resolve_attachment_ref];
         let subpass = SubpassDescription::default()
             .pipeline_bind_point(PipelineBindPoint::GRAPHICS)
-            .color_attachments(color_attachments);
+            .color_attachments(color_attachments)
+            .resolve_attachments(resolve_attachments);
         let subpasses = &[subpass];
-        let attachments = [color_attachment];
+        let attachments = [color_attachment, color_resolve_attachment];
+
+        let msaa_color_attachment_ci = ImageCreateInfo::default()
+            .extent(
+                Extent3D::default()
+                    .depth(1)
+                    .width(swapchain.width())
+                    .height(swapchain.height()),
+            )
+            .samples(multisample_flag)
+            .format(swapchain.get_format())
+            .tiling(ImageTiling::OPTIMAL)
+            .usage(
+                ImageUsageFlags::COLOR_ATTACHMENT
+                    | ImageUsageFlags::TRANSIENT_ATTACHMENT,
+            )
+            .mip_levels(1)
+            .array_layers(1)
+            .image_type(ImageType::TYPE_2D);
+
+        let msaa_color_attachment_ai = vk_mem::AllocationCreateInfo {
+            usage: vk_mem::MemoryUsage::AutoPreferDevice,
+
+            ..Default::default()
+        };
+
+        let mut msaa_color_attachment_views =
+            Vec::with_capacity(swapchain.image_count() as usize);
+
+        for i in 0..swapchain.image_count() {
+            let msaa_color_attachment_image = Arc::new(
+                unsafe {
+                    GpuImage::new(
+                        device,
+                        &msaa_color_attachment_ci,
+                        &msaa_color_attachment_ai,
+                        debug_name!(
+                            device,
+                            "Multisample Color Attachment Image [{}]",
+                            i
+                        ),
+                    )
+                }
+                .map_err(|e|
+                    RenderSetupError::UnknownVulkan(
+                    format!("Could not create Multisample Color Attachment Image {}", i), e))?,
+            );
+            let msaa_color_attachment_subresource_range =
+                ImageSubresourceRange::default()
+                    .aspect_mask(ImageAspectFlags::COLOR)
+                    .base_mip_level(0)
+                    .level_count(1)
+                    .base_array_layer(0)
+                    .layer_count(1);
+
+            let msaa_color_attachment_view_ci = ImageViewCreateInfo::default()
+                .image(msaa_color_attachment_image.inner)
+                .format(swapchain.get_format())
+                .subresource_range(msaa_color_attachment_subresource_range)
+                .view_type(ImageViewType::TYPE_2D);
+            let msaa_color_attachment_image_view = unsafe {
+                GpuImageView::new(
+                    &msaa_color_attachment_image,
+                    &msaa_color_attachment_view_ci,
+                    debug_name!(
+                        device,
+                        "Multisample Attachment Image View [{}]",
+                        i
+                    ),
+                )
+            }
+            .unwrap();
+            msaa_color_attachment_views.push(msaa_color_attachment_image_view);
+        }
 
         let viewport_state = PipelineViewportStateCreateInfo::default()
             .viewports(&viewports)
@@ -330,7 +422,7 @@ impl SurfaceDerived {
                 .front_face(FrontFace::CLOCKWISE)
                 .depth_bias_enable(false);
         let multisample_state = PipelineMultisampleStateCreateInfo::default()
-            .rasterization_samples(SampleCountFlags::TYPE_1);
+            .rasterization_samples(multisample_flag);
 
         let attachments = [PipelineColorBlendAttachmentState::default()
             .dst_color_blend_factor(BlendFactor::ONE)
@@ -365,6 +457,7 @@ impl SurfaceDerived {
         let swapchain_framebuffers = swapchain
             .create_compatible_framebuffers(
                 &render_pass,
+                Some(msaa_color_attachment_views),
                 Some(|i, _| Some(format!("Swapchain framebuffer {}", i))),
             )
             .map_err(|e| {
@@ -630,12 +723,19 @@ impl Context {
                 }
             })
             .ok_or(NoSuitableDevice)?;
+        let graphics_queue_index = scored_phys_dev.graphics_queue_index;
+        let present_queue_index = scored_phys_dev.present_queue_index;
+        let transfer_queue_index = scored_phys_dev.transfer_queue_index;
+        let multisample_flag = scored_phys_dev.multisample_flag;
+        log::warn!("Graphics queue index: {}", graphics_queue_index);
+        log::warn!("Transfer queue index: {}", transfer_queue_index);
+        log::warn!("Present queue index: {}", present_queue_index);
         //TODO: Properly check for these extensions
         let device_extension_names = vec![ash::khr::swapchain::NAME.as_ptr()];
         let mut queue_family_indices = HashSet::with_capacity(3);
-        queue_family_indices.insert(scored_phys_dev.present_queue_index);
-        queue_family_indices.insert(scored_phys_dev.graphics_queue_index);
-        queue_family_indices.insert(scored_phys_dev.transfer_queue_index);
+        queue_family_indices.insert(present_queue_index);
+        queue_family_indices.insert(graphics_queue_index);
+        queue_family_indices.insert(transfer_queue_index);
         let queue_create_infos: Vec<_> = queue_family_indices
             .iter()
             .map(|qfi| {
@@ -783,22 +883,22 @@ impl Context {
                         e,
                     )
                 })?;
-        let command_pool_ci = CommandPoolCreateInfo::default()
-            .queue_family_index(scored_phys_dev.graphics_queue_index)
+        let graphics_command_pool_ci = CommandPoolCreateInfo::default()
+            .queue_family_index(graphics_queue_index)
             .flags(CommandPoolCreateFlags::RESET_COMMAND_BUFFER);
-        let command_pool = Rc::new(
+        let graphics_command_pool = Arc::new(
             //SAFETY: Valid ci
             unsafe {
                 CommandPool::new(
                     &device,
-                    &command_pool_ci,
+                    &graphics_command_pool_ci,
                     debug_name!(device, "Render command pool"),
                 )
             }
             .map_err(|_| CommandBufferCreation)?,
         );
 
-        let command_buffers = command_pool
+        let command_buffers = graphics_command_pool
             .alloc_command_buffers(
                 MAX_FRAMES_IN_FLIGHT,
                 CommandBufferLevel::PRIMARY,
@@ -816,7 +916,7 @@ impl Context {
             Vec::with_capacity(MAX_FRAMES_IN_FLIGHT as usize);
         let mut render_complete_semaphores =
             Vec::with_capacity(MAX_FRAMES_IN_FLIGHT as usize);
-        let mut render_ready_fences =
+        let mut prev_render_complete_fence =
             Vec::with_capacity(MAX_FRAMES_IN_FLIGHT as usize);
 
         let vertex_buffer_ci = BufferCreateInfo::default()
@@ -911,23 +1011,21 @@ impl Context {
                 )
                 .unwrap(),
             );
-            render_ready_fences.push(
+            prev_render_complete_fence.push(
                 Fence::new(
                     &device,
-                    debug_name!(device, "render_ready_fence [{}]", i),
+                    true,
+                    debug_name!(device, "prev_render_complete_fence [{}]", i),
                 )
                 .unwrap(),
             );
         }
 
-        let image_buffer = image::open("res/texture.png")
-            .map_err(|_| MissingTexture)?
-            .into_rgba8();
         let transfer_command_pool_ci = CommandPoolCreateInfo::default()
-            .queue_family_index(scored_phys_dev.transfer_queue_index)
+            .queue_family_index(transfer_queue_index)
             .flags(CommandPoolCreateFlags::TRANSIENT);
         //SAFETY: valid cis
-        let transfer_command_pool = Rc::new(
+        let transfer_command_pool = Arc::new(
             unsafe {
                 CommandPool::new(
                     &device,
@@ -937,167 +1035,32 @@ impl Context {
             }
             .unwrap(),
         );
-
-        let staging_buffer_ci = BufferCreateInfo::default()
-            .usage(BufferUsageFlags::TRANSFER_SRC)
-            .size(size_of_val(image_buffer.as_raw().deref()) as u64)
-            .sharing_mode(SharingMode::EXCLUSIVE);
-
-        let staging_buffer_ai = vk_mem::AllocationCreateInfo {
-            flags: AllocationCreateFlags::MAPPED
-                | AllocationCreateFlags::HOST_ACCESS_SEQUENTIAL_WRITE,
-            usage: vk_mem::MemoryUsage::AutoPreferHost,
-            required_flags: MemoryPropertyFlags::HOST_VISIBLE,
-            preferred_flags: MemoryPropertyFlags::HOST_COHERENT,
-            ..Default::default()
-        };
-
-        //SAFETY: Valid ci and ai
-        let staging_buffer: ManagedMappableBuffer<u8> = unsafe {
-            ManagedMappableBuffer::new(
-                &device,
-                &staging_buffer_ci,
-                &staging_buffer_ai,
-                debug_name!(device, "Staging buffer"),
-            )
-        }
+        let (gpu_image, gpu_waitable) = GpuImage::from_file(
+            "res/texture.png",
+            &device,
+            &transfer_command_pool,
+            &graphics_command_pool,
+            transfer_queue_index,
+            graphics_queue_index,
+        )
         .unwrap();
-
-        let raw_image = image_buffer.as_raw();
-
-        staging_buffer.upload_data(raw_image.as_ref());
-
-        let mut image_transfer_command_buffer = transfer_command_pool
-            .alloc_command_buffer(CommandBufferLevel::PRIMARY)
-            .unwrap();
-
-        let image_create_info = ImageCreateInfo::default()
-            .image_type(ImageType::TYPE_2D)
-            .extent(Extent3D {
-                width: image_buffer.width(),
-                height: image_buffer.height(),
-                depth: 1,
-            })
-            .mip_levels(1)
-            .array_layers(1)
-            .format(Format::R8G8B8A8_SRGB)
-            .tiling(ImageTiling::OPTIMAL)
-            .initial_layout(ImageLayout::UNDEFINED)
-            .usage(ImageUsageFlags::SAMPLED | ImageUsageFlags::TRANSFER_DST)
-            .sharing_mode(SharingMode::EXCLUSIVE)
-            .samples(SampleCountFlags::TYPE_1);
-        let image_allocation_info = vk_mem::AllocationCreateInfo {
-            usage: vk_mem::MemoryUsage::AutoPreferDevice,
-            ..Default::default()
-        };
-        //SAFETY: Valid cis
-        let gpu_image = unsafe {
-            GpuImage::new(
-                &device,
-                &image_create_info,
-                &image_allocation_info,
-                debug_name!(device, "Texture Image"),
-            )
-        }
-        .unwrap();
-        let subresource = ImageSubresourceRange::default()
+        let image_subresource_range = ImageSubresourceRange::default()
             .aspect_mask(ImageAspectFlags::COLOR)
             .base_mip_level(0)
-            .level_count(1)
+            .level_count((gpu_image.mip_levels - 1).max(1))
             .base_array_layer(0)
             .layer_count(1);
-        let image_transfer_begin_info = CommandBufferBeginInfo::default()
-            .flags(CommandBufferUsageFlags::ONE_TIME_SUBMIT);
-        let image_transition_pre_transfer_barrier =
-            ImageMemoryBarrier::default()
-                .old_layout(ImageLayout::UNDEFINED)
-                .new_layout(ImageLayout::TRANSFER_DST_OPTIMAL)
-                .src_queue_family_index(QUEUE_FAMILY_IGNORED)
-                .dst_queue_family_index(QUEUE_FAMILY_IGNORED)
-                .image(gpu_image.inner)
-                .subresource_range(subresource)
-                .src_access_mask(AccessFlags::empty())
-                .dst_access_mask(AccessFlags::TRANSFER_WRITE);
-        let image_transition_post_transfer_barrier =
-            ImageMemoryBarrier::default()
-                .old_layout(ImageLayout::TRANSFER_DST_OPTIMAL)
-                .new_layout(ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .src_queue_family_index(scored_phys_dev.transfer_queue_index)
-                .dst_queue_family_index(scored_phys_dev.graphics_queue_index)
-                .image(gpu_image.inner)
-                .subresource_range(subresource)
-                .src_access_mask(AccessFlags::TRANSFER_WRITE)
-                .dst_access_mask(AccessFlags::SHADER_READ);
-        let image_subresource = ImageSubresourceLayers::default()
-            .aspect_mask(ImageAspectFlags::COLOR)
-            .mip_level(0)
-            .base_array_layer(0)
-            .layer_count(1);
-        let regions = &[BufferImageCopy::default()
-            .buffer_offset(0)
-            .buffer_row_length(0)
-            .buffer_image_height(0)
-            .image_subresource(image_subresource)
-            .image_offset(Offset3D { x: 0, y: 0, z: 0 })
-            .image_extent(Extent3D {
-                width: image_buffer.width(),
-                height: image_buffer.height(),
-                depth: 1,
-            })];
-        image_transfer_command_buffer
-            .record_and_submit(
-                scored_phys_dev.transfer_queue_index,
-                0,
-                &[],
-                &[],
-                &[],
-                &image_transfer_begin_info,
-                ash::vk::Fence::null(),
-                |dev, cb| -> Result<(), ash::vk::Result> {
-                    //SAFETY: cb and all parameters are from the same device
-                    unsafe {
-                        dev.cmd_pipeline_barrier(
-                            cb,
-                            PipelineStageFlags::TOP_OF_PIPE,
-                            PipelineStageFlags::TRANSFER,
-                            DependencyFlags::empty(),
-                            &[],
-                            &[],
-                            &[image_transition_pre_transfer_barrier],
-                        );
-                        dev.cmd_copy_buffer_to_image(
-                            cb,
-                            staging_buffer.get_inner(),
-                            gpu_image.inner,
-                            ImageLayout::TRANSFER_DST_OPTIMAL,
-                            regions,
-                        );
-                        dev.cmd_pipeline_barrier(
-                            cb,
-                            PipelineStageFlags::TRANSFER,
-                            PipelineStageFlags::FRAGMENT_SHADER,
-                            DependencyFlags::empty(),
-                            &[],
-                            &[],
-                            &[image_transition_post_transfer_barrier],
-                        );
-                        Ok(())
-                    }
-                },
-            )
-            .unwrap();
-
         let gpu_image = Arc::new(gpu_image);
         let image_view_ci = ImageViewCreateInfo::default()
             .image(gpu_image.inner)
             .view_type(ImageViewType::TYPE_2D)
             .format(Format::R8G8B8A8_SRGB)
-            .subresource_range(subresource);
+            .subresource_range(image_subresource_range);
 
         let gpu_image_view = unsafe {
             GpuImageView::new(
                 &gpu_image,
-                image_view_ci,
+                &image_view_ci,
                 debug_name!(device, "Texture image view"),
             )
         }
@@ -1127,7 +1090,6 @@ impl Context {
             )
         }
         .unwrap();
-        device.wait_idle().unwrap();
 
         for (i, descriptor_set) in descriptor_sets.iter_mut().enumerate() {
             let buffer_infos = &[DescriptorBufferInfo::default()
@@ -1162,8 +1124,17 @@ impl Context {
             };
         }
 
+        let fences: Vec<_> = gpu_waitable.get_fences().collect();
+
+        unsafe {
+            device
+                .as_inner_ref()
+                .wait_for_fences(&fences, true, u64::MAX)
+        }
+        .unwrap();
+
         Ok(Context {
-            sync_index: 0,
+            frame_index: 0,
             win,
             command_buffers,
             uniform_descriptor_sets: descriptor_sets,
@@ -1171,20 +1142,21 @@ impl Context {
             surface_derived: Some(SurfaceDerived::new(
                 &device,
                 Arc::new(surface),
-                scored_phys_dev.graphics_queue_index,
-                scored_phys_dev.present_queue_index,
+                graphics_queue_index,
+                present_queue_index,
                 &[&vert_shader_mod, &frag_shader_mod],
                 &pipeline_layout,
+                multisample_flag,
                 None,
             )?),
-            graphics_queue_index: scored_phys_dev.graphics_queue_index,
-            present_queue_index: scored_phys_dev.present_queue_index,
+            graphics_queue_index,
+            present_queue_index,
             vertex_buffers,
             uniform_buffers,
             index_buffers,
             image_available_semaphores,
             render_complete_semaphores,
-            prev_frame_finished_fences: render_ready_fences,
+            prev_frame_finished_fences: prev_render_complete_fence,
             pipeline_layout,
             device,
             vert_shader_mod,
@@ -1192,155 +1164,189 @@ impl Context {
             start_time: Instant::now(),
             _gpu_image_view: gpu_image_view,
             _texture_sampler: texture_sampler,
+            multisample_flag: scored_phys_dev.multisample_flag,
+            minimized: false,
         })
     }
-    pub fn resize(&mut self) {
-        if let Some(ref mut surface_derived) = self.surface_derived {
-            let surface = surface_derived.surface.clone();
-            //Must wait for the device to be idle before dropping any objects
-            //potentially referred to by frames in flight
-            self.device.wait_idle().unwrap();
+    pub fn resize(&mut self, new_size: PhysicalSize<u32>) {
+        if new_size.width != 0 && new_size.height != 0 {
+            if let Some(ref mut surface_derived) = self.surface_derived {
+                let surface = surface_derived.surface.clone();
+                //Must wait for the device to be idle before dropping any objects
+                //potentially referred to by frames in flight
+                self.device.wait_idle().unwrap();
 
-            *surface_derived = SurfaceDerived::new(
-                &self.device,
-                surface,
-                self.graphics_queue_index,
-                self.present_queue_index,
-                &[&self.vert_shader_mod, &self.frag_shader_mod],
-                &self.pipeline_layout,
-                Some(&surface_derived.swapchain),
-            )
-            .unwrap();
+                *surface_derived = SurfaceDerived::new(
+                    &self.device,
+                    surface,
+                    self.graphics_queue_index,
+                    self.present_queue_index,
+                    &[&self.vert_shader_mod, &self.frag_shader_mod],
+                    &self.pipeline_layout,
+                    self.multisample_flag,
+                    Some(&surface_derived.swapchain),
+                )
+                .unwrap();
+                self.minimized = false;
+            }
+        } else {
+            self.minimized = true;
         }
     }
     pub fn draw(&mut self) {
-        match &mut self.surface_derived {
-            Some(sd) => {
-                let sync_index = self.sync_index;
-                self.sync_index =
-                    (self.sync_index + 1) % MAX_FRAMES_IN_FLIGHT as usize;
-                let guard_fence =
-                    &mut self.prev_frame_finished_fences[sync_index];
-                guard_fence.wait_and_reset().unwrap();
-                let image_available_semaphore =
-                    &mut self.image_available_semaphores[sync_index];
-                let render_complete_semaphore =
-                    &mut self.render_complete_semaphores[sync_index];
-                let vertex_buffer = &mut self.vertex_buffers[sync_index];
-                let index_buffer = &mut self.index_buffers[sync_index];
-                let uniform_buffer = &mut self.uniform_buffers[sync_index];
-                let uniform_descriptor_set =
-                    &mut self.uniform_descriptor_sets[sync_index];
-                let cb = &mut self.command_buffers[sync_index];
-                //SAFETY: Semaphore derives from same device as swapchain
-                let fb_index = unsafe {
-                    sd.swapchain.acquire_next_image(
-                        Some(image_available_semaphore),
-                        None,
+        if !self.minimized {
+            match &mut self.surface_derived {
+                Some(sd) => {
+                    let frame_index = self.frame_index;
+                    self.frame_index += 1;
+                    let sync_index =
+                        frame_index % MAX_FRAMES_IN_FLIGHT as usize;
+                    let guard_fence =
+                        &mut self.prev_frame_finished_fences[sync_index];
+                    guard_fence.wait_and_reset().unwrap();
+                    let image_available_semaphore =
+                        &mut self.image_available_semaphores[sync_index];
+                    let render_complete_semaphore =
+                        &mut self.render_complete_semaphores[sync_index];
+                    let vertex_buffer = &mut self.vertex_buffers[sync_index];
+                    let index_buffer = &mut self.index_buffers[sync_index];
+                    let uniform_buffer = &mut self.uniform_buffers[sync_index];
+                    let uniform_descriptor_set =
+                        &mut self.uniform_descriptor_sets[sync_index];
+                    let cb = &mut self.command_buffers[sync_index];
+                    //SAFETY: Semaphore derives from same device as swapchain
+                    let fb_index = unsafe {
+                        sd.swapchain.acquire_next_image(
+                            Some(image_available_semaphore),
+                            None,
+                        )
+                    }
+                    .unwrap()
+                    .0;
+                    let fb = &mut sd.swapchain_framebuffers[fb_index as usize];
+                    let model = Mat4::rotation_z(
+                        90f32.to_radians()
+                            * self.start_time.elapsed().as_secs_f32(),
+                    );
+                    let view: Mat4<f32> = Mat4::look_at_rh(
+                        Vec3::new(0., -1., 2.),
+                        Vec3::broadcast(0.),
+                        Vec3::unit_z(),
+                    );
+                    let mut proj: Mat4<f32> = Mat4::infinite_perspective_rh(
+                        45f32.to_radians(),
+                        sd.swapchain.get_aspect_ratio(),
+                        0.01,
+                    );
+
+                    //Need to invert the projection matrix in order to flip the y
+                    //axis properly without influencing other coords. Also turns it
+                    //into a right hand coordinate space which is what I want.
+                    //Thanks vulkan.
+                    proj[(1, 1)] *= -1f32;
+
+                    vertex_buffer.upload_data(VERTICES);
+                    index_buffer.upload_data(INDICES);
+                    uniform_buffer.upload_data(&[Uniform {
+                        model,
+                        view,
+                        proj,
+                    }]);
+
+                    cb.record_and_submit(
+                        self.graphics_queue_index,
+                        0,
+                        &[image_available_semaphore.get_inner()],
+                        &[PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT],
+                        &[render_complete_semaphore.get_inner()],
+                        &CommandBufferBeginInfo::default()
+                            .flags(CommandBufferUsageFlags::ONE_TIME_SUBMIT),
+                        guard_fence.get_inner(),
+                        |dev, cb| -> Result<(), ash::vk::Result> {
+                            //SAFETY: We know dev and cb are linked. All other vars
+                            //used are derived from device
+                            unsafe {
+                                if let Some(debug_device) =
+                                    self.device.debug_device_ref()
+                                {
+                                    let label_name = CString::new(format!(
+                                        "Rendering frame {} si {} to fb {}",
+                                        frame_index, sync_index, fb_index
+                                    ))
+                                    .unwrap();
+
+                                    let debug_label =
+                                        DebugUtilsLabelEXT::default()
+                                            .label_name(&label_name)
+                                            .color(LIME);
+
+                                    debug_device.cmd_begin_debug_utils_label(
+                                        cb,
+                                        &debug_label,
+                                    );
+                                }
+                                dev.cmd_bind_descriptor_sets(
+                                    cb,
+                                    PipelineBindPoint::GRAPHICS,
+                                    self.pipeline_layout.get_inner(),
+                                    0,
+                                    &[uniform_descriptor_set.get_inner()],
+                                    &[],
+                                );
+                                dev.cmd_bind_index_buffer(
+                                    cb,
+                                    index_buffer.get_inner(),
+                                    0,
+                                    IndexType::UINT16,
+                                );
+                                dev.cmd_bind_vertex_buffers(
+                                    cb,
+                                    0,
+                                    &[vertex_buffer.get_inner()],
+                                    &[0],
+                                );
+
+                                dev.cmd_begin_render_pass(
+                                    cb,
+                                    &RenderPassBeginInfo::default()
+                                        .clear_values(&[ClearValue {
+                                            color: ClearColorValue {
+                                                float32: [0.0, 0.0, 0.0, 1.0],
+                                            },
+                                        }])
+                                        .render_area(sd.swapchain.as_rect())
+                                        .render_pass(sd.render_pass.get_inner())
+                                        .framebuffer(fb.get_inner()),
+                                    SubpassContents::INLINE,
+                                );
+                                dev.cmd_bind_pipeline(
+                                    cb,
+                                    PipelineBindPoint::GRAPHICS,
+                                    sd.pipeline.get_inner(),
+                                );
+                                dev.cmd_draw_indexed(
+                                    cb,
+                                    INDICES.len() as u32,
+                                    1,
+                                    0,
+                                    0,
+                                    0,
+                                );
+                                dev.cmd_end_render_pass(cb);
+                                Ok(())
+                            }
+                        },
                     )
+                    .unwrap();
+
+                    fb.present(
+                        self.present_queue_index,
+                        &[render_complete_semaphore.get_inner()],
+                    )
+                    .unwrap();
                 }
-                .unwrap()
-                .0;
-                let fb = &mut sd.swapchain_framebuffers[fb_index as usize];
-                let model = Mat4::rotation_z(
-                    90f32.to_radians()
-                        * self.start_time.elapsed().as_secs_f32(),
-                );
-                let view: Mat4<f32> = Mat4::look_at_rh(
-                    Vec3::new(0., -1., 2.),
-                    Vec3::broadcast(0.),
-                    Vec3::unit_z(),
-                );
-                let mut proj: Mat4<f32> = Mat4::infinite_perspective_rh(
-                    45f32.to_radians(),
-                    sd.swapchain.get_aspect_ratio(),
-                    0.01,
-                );
-
-                //Need to invert the projection matrix in order to flip the y
-                //axis properly without influencing other coords. Also turns it
-                //into a right hand coordinate space which is what I want.
-                //Thanks vulkan.
-                proj[(1, 1)] *= -1f32;
-
-                vertex_buffer.upload_data(VERTICES);
-                index_buffer.upload_data(INDICES);
-                uniform_buffer.upload_data(&[Uniform { model, view, proj }]);
-
-                cb.record_and_submit(
-                    self.graphics_queue_index,
-                    0,
-                    &[image_available_semaphore.get_inner()],
-                    &[PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT],
-                    &[render_complete_semaphore.get_inner()],
-                    &CommandBufferBeginInfo::default()
-                        .flags(CommandBufferUsageFlags::ONE_TIME_SUBMIT),
-                    guard_fence.get_inner(),
-                    |dev, cb| -> Result<(), ash::vk::Result> {
-                        //SAFETY: We know dev and cb are linked. All other vars
-                        //used are derived from device
-                        unsafe {
-                            dev.cmd_bind_descriptor_sets(
-                                cb,
-                                PipelineBindPoint::GRAPHICS,
-                                self.pipeline_layout.get_inner(),
-                                0,
-                                &[uniform_descriptor_set.get_inner()],
-                                &[],
-                            );
-                            dev.cmd_bind_index_buffer(
-                                cb,
-                                index_buffer.get_inner(),
-                                0,
-                                IndexType::UINT16,
-                            );
-                            dev.cmd_bind_vertex_buffers(
-                                cb,
-                                0,
-                                &[vertex_buffer.get_inner()],
-                                &[0],
-                            );
-
-                            dev.cmd_begin_render_pass(
-                                cb,
-                                &RenderPassBeginInfo::default()
-                                    .clear_values(&[ClearValue {
-                                        color: ClearColorValue {
-                                            float32: [0.0, 0.0, 0.0, 1.0],
-                                        },
-                                    }])
-                                    .render_area(sd.swapchain.as_rect())
-                                    .render_pass(sd.render_pass.get_inner())
-                                    .framebuffer(fb.get_inner()),
-                                SubpassContents::INLINE,
-                            );
-                            dev.cmd_bind_pipeline(
-                                cb,
-                                PipelineBindPoint::GRAPHICS,
-                                sd.pipeline.get_inner(),
-                            );
-                            dev.cmd_draw_indexed(
-                                cb,
-                                INDICES.len() as u32,
-                                1,
-                                0,
-                                0,
-                                0,
-                            );
-                            dev.cmd_end_render_pass(cb);
-                            Ok(())
-                        }
-                    },
-                )
-                .unwrap();
-
-                fb.present(
-                    self.present_queue_index,
-                    &[render_complete_semaphore.get_inner()],
-                )
-                .unwrap();
+                None => {}
             }
-            None => {}
         }
     }
 
@@ -1355,6 +1361,7 @@ struct ScoredPhysDev {
     graphics_queue_index: u32,
     present_queue_index: u32,
     transfer_queue_index: u32,
+    multisample_flag: SampleCountFlags,
 }
 impl PartialEq for ScoredPhysDev {
     fn eq(&self, other: &Self) -> bool {
@@ -1447,10 +1454,25 @@ unsafe fn evaluate_physical_device(
         .enumerate()
         .find(|(_qfi, props)| {
             props.queue_flags.contains(QueueFlags::TRANSFER)
-                && (!props.queue_flags & !QueueFlags::TRANSFER).is_empty()
+                && !(props
+                    .queue_flags
+                    .contains(QueueFlags::GRAPHICS | QueueFlags::COMPUTE))
         })
         .map(|(i, _props)| i as u32)
         .or(graphics_queue_index);
+    let shared_max_sample_count = {
+        let counts = properties.props.limits.framebuffer_color_sample_counts
+            & properties.props.limits.framebuffer_depth_sample_counts;
+        [
+            vk::SampleCountFlags::TYPE_8,
+            vk::SampleCountFlags::TYPE_4,
+            vk::SampleCountFlags::TYPE_2,
+        ]
+        .iter()
+        .cloned()
+        .find(|c| counts.contains(*c))
+        .unwrap_or(vk::SampleCountFlags::TYPE_1)
+    };
     if properties.extensions.iter().any(|ext| {
         ash::khr::swapchain::NAME.eq(ext.extension_name_as_c_str().expect(
             "It'd be weird if we got an extension that wasn't a valid cstr",
@@ -1467,7 +1489,8 @@ unsafe fn evaluate_physical_device(
     } {
         graphics_queue_index.and_then(|graphics_queue_index| {
             present_queue_index.map(|present_queue_index| {
-                //Weight CPUs more highly based on what type they are. If unknown,
+                let transfer_queue_index = transfer_queue_index.unwrap();
+                //Weight GPUs more highly based on what type they are. If unknown,
                 //just return some weird low value but better than CPU
                 let device_type_score = match properties.props.device_type {
                     PhysicalDeviceType::DISCRETE_GPU => 1000,
@@ -1476,25 +1499,58 @@ unsafe fn evaluate_physical_device(
                     _ => 100,
                 };
                 //If multiple of same category, pick the one with a shared graphics and presentation queue
-                let queue_score = if graphics_queue_index == present_queue_index
-                {
-                    100
-                } else {
-                    50
-                };
+                let shared_pres_graph_queue_score =
+                    if graphics_queue_index == present_queue_index {
+                        100
+                    } else {
+                        0
+                    };
+                let shared_transfer_queue_score =
+                    if transfer_queue_index == graphics_queue_index {
+                        0
+                    } else if transfer_queue_index == present_queue_index {
+                        50
+                    } else {
+                        100
+                    };
+
+                let multisample_score = map_multisample_flag_to_sample_count(
+                    shared_max_sample_count,
+                );
+
+                let queue_score = shared_pres_graph_queue_score
+                    + shared_transfer_queue_score
+                    + multisample_score;
                 ScoredPhysDev {
                     score: queue_score + device_type_score,
                     phys_dev,
                     graphics_queue_index,
                     present_queue_index,
-                    //Can unwrap because this is guaranteed to be Some if
-                    //graphics_queue_index is some
-                    transfer_queue_index: transfer_queue_index.unwrap(),
+                    transfer_queue_index,
+                    multisample_flag: shared_max_sample_count,
                 }
             })
         })
     } else {
         None
+    }
+}
+
+const CYAN: [f32; 4] = [0., 0.976, 1., 1.0];
+const MAGENTA: [f32; 4] = [0.839, 0.067, 0.804, 1.0];
+const YELLOW: [f32; 4] = [0.957, 0.98, 0.424, 1.0];
+const LIME: [f32; 4] = [0.514, 0.969, 0.333, 1.0];
+
+fn map_multisample_flag_to_sample_count(flag: SampleCountFlags) -> u64 {
+    match flag {
+        SampleCountFlags::TYPE_1=>1,
+        SampleCountFlags::TYPE_2=>2,
+        SampleCountFlags::TYPE_4 => 4,
+        SampleCountFlags::TYPE_8 => 8,
+        SampleCountFlags::TYPE_16=> 16,
+        SampleCountFlags::TYPE_32=> 32,
+        SampleCountFlags::TYPE_64=> 64,
+        _ => panic!("You need to ensure you're passing *singular* flags to this function"),
     }
 }
 
@@ -1520,8 +1576,492 @@ struct GpuImage {
     inner: ash::vk::Image,
     parent: Arc<Device>,
     allocation: vk_mem::Allocation,
+    mip_levels: u32,
+}
+
+trait FenceProducer {
+    type Iter: Iterator<Item = ash::vk::Fence>;
+    fn get_fences(&self) -> Self::Iter;
+}
+#[derive(Debug, thiserror::Error)]
+enum LoadTextureFromFileError {
+    #[error("Attempted to load invalid file")]
+    InvalidTextureFile,
+    #[error("Error submitting command buffer")]
+    GpuUploadError,
+    #[error("File does not exist")]
+    NoSuchFile,
+    #[error("Could not generate mipmaps")]
+    MipmapGenerationError,
 }
 impl GpuImage {
+    fn from_file(
+        path: impl AsRef<Path> + Clone,
+        device: &Arc<Device>,
+        transfer_command_pool: &Arc<CommandPool>,
+        graphics_command_pool: &Arc<CommandPool>,
+        transfer_queue_index: u32,
+        graphics_queue_index: u32,
+    ) -> Result<(Self, impl FenceProducer), LoadTextureFromFileError> {
+        let image_file = std::io::BufReader::new(
+            std::fs::File::open(path.clone())
+                .map_err(|_| LoadTextureFromFileError::NoSuchFile)?,
+        );
+        let image_buffer = image::load(image_file, image::ImageFormat::Png)
+            .map_err(|_| LoadTextureFromFileError::InvalidTextureFile)?
+            .into_rgba8();
+
+        let staging_buffer_ci = BufferCreateInfo::default()
+            .usage(BufferUsageFlags::TRANSFER_SRC)
+            .size(size_of_val(image_buffer.as_raw().deref()) as u64)
+            .sharing_mode(SharingMode::EXCLUSIVE);
+
+        let staging_buffer_ai = vk_mem::AllocationCreateInfo {
+            flags: AllocationCreateFlags::MAPPED
+                | AllocationCreateFlags::HOST_ACCESS_SEQUENTIAL_WRITE,
+            usage: vk_mem::MemoryUsage::AutoPreferHost,
+            required_flags: MemoryPropertyFlags::HOST_VISIBLE,
+            preferred_flags: MemoryPropertyFlags::HOST_COHERENT,
+            ..Default::default()
+        };
+
+        //SAFETY: Valid ci and ai
+        let staging_buffer: ManagedMappableBuffer<u8> = unsafe {
+            ManagedMappableBuffer::new(
+                device,
+                &staging_buffer_ci,
+                &staging_buffer_ai,
+                debug_name!(device, "Staging buffer"),
+            )
+        }
+        .unwrap();
+
+        let raw_image = image_buffer.as_raw();
+
+        staging_buffer.upload_data(raw_image.as_ref());
+
+        let mut image_transfer_command_buffer = transfer_command_pool
+            .alloc_command_buffer(CommandBufferLevel::PRIMARY)
+            .unwrap();
+
+        //Convenient zero cast way to get a log2
+        let mip_levels = (image_buffer.width().max(image_buffer.height())
+            as f32)
+            .log2() as u32
+            + 1;
+
+        let image_create_info = ImageCreateInfo::default()
+            .image_type(ImageType::TYPE_2D)
+            .extent(Extent3D {
+                width: image_buffer.width(),
+                height: image_buffer.height(),
+                depth: 1,
+            })
+            .mip_levels(mip_levels)
+            .array_layers(1)
+            .format(Format::R8G8B8A8_SRGB)
+            .tiling(ImageTiling::OPTIMAL)
+            .initial_layout(ImageLayout::UNDEFINED)
+            .usage(
+                ImageUsageFlags::SAMPLED
+                    | ImageUsageFlags::TRANSFER_DST
+                    | ImageUsageFlags::TRANSFER_SRC,
+            )
+            .sharing_mode(SharingMode::EXCLUSIVE)
+            .samples(SampleCountFlags::TYPE_1);
+        let image_allocation_info = vk_mem::AllocationCreateInfo {
+            usage: vk_mem::MemoryUsage::AutoPreferDevice,
+            ..Default::default()
+        };
+
+        //SAFETY: Valid cis
+        let gpu_image = unsafe {
+            GpuImage::new(
+                device,
+                &image_create_info,
+                &image_allocation_info,
+                debug_name!(device, "Texture Image"),
+            )
+        }
+        .unwrap();
+
+        let whole_image_subresource_range = ImageSubresourceRange::default()
+            .aspect_mask(ImageAspectFlags::COLOR)
+            .base_mip_level(0)
+            .level_count(mip_levels)
+            .base_array_layer(0)
+            .layer_count(1);
+
+        let image_transfer_begin_info = CommandBufferBeginInfo::default()
+            .flags(CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+
+        //Sets up image to be transfered into from the buffer
+        let image_pre_load_barrier = ImageMemoryBarrier::default()
+            .old_layout(ImageLayout::UNDEFINED)
+            .new_layout(ImageLayout::TRANSFER_DST_OPTIMAL)
+            .src_queue_family_index(QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(QUEUE_FAMILY_IGNORED)
+            .image(gpu_image.inner)
+            .subresource_range(whole_image_subresource_range)
+            .src_access_mask(AccessFlags::empty())
+            .dst_access_mask(AccessFlags::TRANSFER_WRITE);
+
+        //Transfers the image to the graphics queue and makes it so that the
+        //whole image is in TRANSFER_SRC_OPTIMAL
+        let image_post_load_barrier = ImageMemoryBarrier::default()
+            .image(gpu_image.inner)
+            .old_layout(ImageLayout::TRANSFER_DST_OPTIMAL)
+            .new_layout(ImageLayout::TRANSFER_SRC_OPTIMAL)
+            .src_queue_family_index(transfer_queue_index)
+            .dst_queue_family_index(graphics_queue_index)
+            .subresource_range(whole_image_subresource_range)
+            .src_access_mask(AccessFlags::TRANSFER_WRITE)
+            .dst_access_mask(AccessFlags::TRANSFER_READ);
+
+        let image_subresource_layers = ImageSubresourceLayers::default()
+            .aspect_mask(ImageAspectFlags::COLOR)
+            .mip_level(0)
+            .base_array_layer(0)
+            .layer_count(1);
+
+        let regions = &[BufferImageCopy::default()
+            .buffer_offset(0)
+            .buffer_row_length(0)
+            .buffer_image_height(0)
+            .image_subresource(image_subresource_layers)
+            .image_offset(Offset3D { x: 0, y: 0, z: 0 })
+            .image_extent(Extent3D {
+                width: image_buffer.width(),
+                height: image_buffer.height(),
+                depth: 1,
+            })];
+
+        let transfer_complete_semaphore = Semaphore::new(
+            device,
+            debug_name!(
+                device,
+                "Texture Transfer Complete Semaphore For {:?}",
+                path.clone().as_ref().to_str().unwrap()
+            ),
+        )
+        .unwrap();
+
+        image_transfer_command_buffer
+            .record_and_submit(
+                transfer_queue_index,
+                0,
+                &[],
+                &[],
+                &[transfer_complete_semaphore.get_inner()],
+                &image_transfer_begin_info,
+                ash::vk::Fence::null(),
+                |dev, cb| -> Result<(), ash::vk::Result> {
+                    //SAFETY: cb and all parameters are from the same device
+
+                    unsafe {
+                        if let Some(debug_device) = device.debug_device_ref() {
+                            let debug_label = CString::new(format!(
+                                "Transferring image at {:?} to base mip level",
+                                path.clone().as_ref()
+                            ))
+                            .unwrap();
+                            let debug_label = DebugUtilsLabelEXT::default()
+                                .label_name(&debug_label)
+                                .color(MAGENTA);
+
+                            debug_device
+                                .cmd_begin_debug_utils_label(cb, &debug_label);
+                        }
+                        dev.cmd_pipeline_barrier(
+                            cb,
+                            PipelineStageFlags::TOP_OF_PIPE,
+                            PipelineStageFlags::TRANSFER,
+                            DependencyFlags::empty(),
+                            &[],
+                            &[],
+                            &[image_pre_load_barrier],
+                        );
+                        dev.cmd_copy_buffer_to_image(
+                            cb,
+                            staging_buffer.get_inner(),
+                            gpu_image.inner,
+                            ImageLayout::TRANSFER_DST_OPTIMAL,
+                            regions,
+                        );
+                        dev.cmd_pipeline_barrier(
+                            cb,
+                            PipelineStageFlags::TRANSFER,
+                            PipelineStageFlags::TRANSFER,
+                            DependencyFlags::empty(),
+                            &[],
+                            &[],
+                            &[image_post_load_barrier],
+                        );
+                    };
+
+                    if let Some(debug_device) = device.debug_device_ref() {
+                        unsafe { debug_device.cmd_end_debug_utils_label(cb) };
+                    }
+
+                    Ok(())
+                },
+            )
+            .map_err(|_| LoadTextureFromFileError::GpuUploadError)?;
+        let generate_mipmaps_begin_info = CommandBufferBeginInfo::default()
+            .flags(CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+        let mut mipmap_generate_command_buffer = graphics_command_pool
+            .alloc_command_buffer(CommandBufferLevel::PRIMARY)
+            .unwrap();
+
+        let texture_ready_fence = Fence::new(
+            device,
+            false,
+            debug_name!(device, "Texture Ready Fence"),
+        )
+        .unwrap();
+
+        mipmap_generate_command_buffer
+            .record_and_submit(
+                graphics_queue_index,
+                0,
+                &[transfer_complete_semaphore.get_inner()],
+                &[PipelineStageFlags::TRANSFER],
+                &[],
+                &generate_mipmaps_begin_info,
+                texture_ready_fence.get_inner(),
+                |dev, cb| -> Result<(), ash::vk::Result> {
+                    let acquire_image_barrier = ImageMemoryBarrier::default()
+                        .src_queue_family_index(transfer_queue_index)
+                        .dst_queue_family_index(graphics_queue_index)
+                        .image(gpu_image.inner)
+                        .old_layout(ImageLayout::TRANSFER_DST_OPTIMAL)
+                        .new_layout(ImageLayout::TRANSFER_SRC_OPTIMAL)
+                        .subresource_range(whole_image_subresource_range);
+
+                    if transfer_queue_index != graphics_queue_index {
+                        unsafe {
+                            dev.cmd_pipeline_barrier(
+                                cb,
+                                PipelineStageFlags::TRANSFER,
+                                PipelineStageFlags::TRANSFER,
+                                DependencyFlags::empty(),
+                                &[],
+                                &[],
+                                &[acquire_image_barrier],
+                            );
+                        }
+                    }
+                    let mut prev_level_preblit_barrier = None;
+                    let mut image_barriers = Vec::with_capacity(2);
+                    if let Some(debug_device) = device.debug_device_ref() {
+                        let label_name = CString::new(format!(
+                            "Generating mipmaps for texture {:?}",
+                            path.clone().as_ref()
+                        ))
+                        .unwrap();
+                        let debug_label = DebugUtilsLabelEXT::default()
+                            .label_name(&label_name)
+                            .color(YELLOW);
+
+                        unsafe {
+                            debug_device
+                                .cmd_begin_debug_utils_label(cb, &debug_label)
+                        };
+                    }
+                    for mip_level in 1..mip_levels {
+                        if let Some(debug_device) = device.debug_device_ref() {
+                            let label_name = CString::new(format!(
+                                "Mip Level {} of {:?}",
+                                mip_level,
+                                path.clone().as_ref()
+                            ))
+                            .unwrap();
+
+                            let debug_label = DebugUtilsLabelEXT::default()
+                                .label_name(&label_name)
+                                .color(CYAN);
+                            unsafe {
+                                debug_device.cmd_begin_debug_utils_label(
+                                    cb,
+                                    &debug_label,
+                                )
+                            };
+                        }
+                        let prev_level = mip_level - 1;
+
+                        let current_level_range =
+                            ImageSubresourceRange::default()
+                                .aspect_mask(ImageAspectFlags::COLOR)
+                                .base_array_layer(0)
+                                .layer_count(1)
+                                .level_count(1)
+                                .base_mip_level(mip_level);
+
+                        let current_layer_preblit_barrier =
+                            ImageMemoryBarrier::default()
+                                .image(gpu_image.inner)
+                                .src_queue_family_index(QUEUE_FAMILY_IGNORED)
+                                .dst_queue_family_index(QUEUE_FAMILY_IGNORED)
+                                .old_layout(ImageLayout::UNDEFINED)
+                                .new_layout(ImageLayout::TRANSFER_DST_OPTIMAL)
+                                .src_access_mask(AccessFlags::empty())
+                                .dst_access_mask(AccessFlags::TRANSFER_WRITE)
+                                .subresource_range(current_level_range);
+
+                        image_barriers.clear();
+                        image_barriers.push(current_layer_preblit_barrier);
+                        if let Some(b) = prev_level_preblit_barrier {
+                            image_barriers.push(b)
+                        }
+
+                        let prev_level_layer =
+                            ImageSubresourceLayers::default()
+                                .aspect_mask(ImageAspectFlags::COLOR)
+                                .mip_level(mip_level - 1)
+                                .base_array_layer(0)
+                                .layer_count(1);
+                        let mip_level_layer = ImageSubresourceLayers::default()
+                            .aspect_mask(ImageAspectFlags::COLOR)
+                            .mip_level(mip_level)
+                            .base_array_layer(0)
+                            .layer_count(1);
+                        let prev_level_width =
+                            image_buffer.width() / 2u32.pow(prev_level);
+                        let prev_level_height =
+                            image_buffer.height() / 2u32.pow(prev_level);
+
+                        let mip_level_height = (image_buffer.height()
+                            / 2_u32.pow(mip_level))
+                        .max(1);
+                        let mip_level_width =
+                            (image_buffer.width() / 2u32.pow(mip_level)).max(1);
+                        let blit_info = ImageBlit::default()
+                            .src_offsets([
+                                Offset3D { x: 0, y: 0, z: 0 },
+                                Offset3D {
+                                    x: prev_level_width as i32,
+                                    y: prev_level_height as i32,
+                                    z: 1,
+                                },
+                            ])
+                            .src_subresource(prev_level_layer)
+                            .dst_offsets([
+                                Offset3D { x: 0, y: 0, z: 0 },
+                                Offset3D {
+                                    x: mip_level_width as i32,
+                                    y: mip_level_height as i32,
+                                    z: 1,
+                                },
+                            ])
+                            .dst_subresource(mip_level_layer);
+                        unsafe {
+                            dev.cmd_pipeline_barrier(
+                                cb,
+                                PipelineStageFlags::TRANSFER,
+                                PipelineStageFlags::TRANSFER,
+                                DependencyFlags::empty(),
+                                &[],
+                                &[],
+                                &image_barriers,
+                            );
+                            dev.cmd_blit_image(
+                                cb,
+                                gpu_image.inner,
+                                ImageLayout::TRANSFER_SRC_OPTIMAL,
+                                gpu_image.inner,
+                                ImageLayout::TRANSFER_DST_OPTIMAL,
+                                &[blit_info],
+                                vk::Filter::LINEAR,
+                            );
+                        }
+                        //Transfer the level we just wrote into
+                        //TRANSFER_SRC_OPTIMAL for future blits
+                        prev_level_preblit_barrier = Some(
+                            current_layer_preblit_barrier
+                                .new_layout(ImageLayout::TRANSFER_SRC_OPTIMAL)
+                                .old_layout(ImageLayout::TRANSFER_DST_OPTIMAL),
+                        );
+
+                        if let Some(debug_device) = device.debug_device_ref() {
+                            unsafe {
+                                debug_device.cmd_end_debug_utils_label(cb)
+                            };
+                        }
+                    }
+
+                    let whole_image_but_last_level_range =
+                        ImageSubresourceRange::default()
+                            .aspect_mask(ImageAspectFlags::COLOR)
+                            .base_array_layer(0)
+                            .base_mip_level(0)
+                            .layer_count(1)
+                            //If there's only one mip level, prev_image_barrier
+                            //will be None. Otherwise, that barrier will handle
+                            //that mip level
+                            .level_count((mip_levels - 1).max(1));
+
+                    let final_image_barrier = ImageMemoryBarrier::default()
+                        .src_access_mask(AccessFlags::TRANSFER_READ)
+                        .dst_access_mask(AccessFlags::SHADER_READ)
+                        .old_layout(ImageLayout::TRANSFER_SRC_OPTIMAL)
+                        .new_layout(ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                        .src_queue_family_index(QUEUE_FAMILY_IGNORED)
+                        .dst_queue_family_index(QUEUE_FAMILY_IGNORED)
+                        .subresource_range(whole_image_but_last_level_range)
+                        .image(gpu_image.inner);
+                    image_barriers.clear();
+                    if let Some(b) = prev_level_preblit_barrier {
+                        image_barriers.push(
+                            b.new_layout(ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                                .dst_access_mask(AccessFlags::SHADER_READ),
+                        )
+                    }
+                    image_barriers.push(final_image_barrier);
+
+                    unsafe {
+                        dev.cmd_pipeline_barrier(
+                            cb,
+                            PipelineStageFlags::TRANSFER,
+                            PipelineStageFlags::FRAGMENT_SHADER,
+                            DependencyFlags::empty(),
+                            &[],
+                            &[],
+                            &image_barriers,
+                        );
+                        if let Some(debug_device) = device.debug_device_ref() {
+                            debug_device.cmd_end_debug_utils_label(cb);
+                        }
+                    }
+                    Ok(())
+                },
+            )
+            .map_err(|_| LoadTextureFromFileError::MipmapGenerationError)?;
+        struct Return {
+            _staging_buffer: ManagedMappableBuffer<u8>,
+            _cb: CommandBuffer,
+            _sem: Semaphore,
+            fence: Fence,
+            _cb2: CommandBuffer,
+        }
+
+        impl FenceProducer for Return {
+            type Iter = std::iter::Once<ash::vk::Fence>;
+            fn get_fences(&self) -> Self::Iter {
+                std::iter::once(self.fence.get_inner())
+            }
+        }
+
+        Ok((
+            gpu_image,
+            Return {
+                _staging_buffer: staging_buffer,
+                _cb: image_transfer_command_buffer,
+                _cb2: mipmap_generate_command_buffer,
+                _sem: transfer_complete_semaphore,
+                fence: texture_ready_fence,
+            },
+        ))
+    }
     //SAFETY REQUIREMENTS: Valid ci and ai
     unsafe fn new(
         device: &Arc<Device>,
@@ -1542,6 +2082,8 @@ impl GpuImage {
             parent: device.clone(),
             inner,
             allocation,
+
+            mip_levels: image_create_info.mip_levels,
         })
     }
 }
@@ -1578,14 +2120,14 @@ impl Drop for GpuImageView {
 impl GpuImageView {
     unsafe fn new(
         parent_image: &Arc<GpuImage>,
-        ci: ImageViewCreateInfo,
+        ci: &ImageViewCreateInfo,
         debug_name: Option<String>,
     ) -> VkResult<Self> {
         let inner = unsafe {
             parent_image
                 .parent
                 .as_inner_ref()
-                .create_image_view(&ci, None)
+                .create_image_view(ci, None)
         }?;
 
         associate_debug_name!(parent_image.parent, inner, debug_name);

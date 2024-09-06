@@ -1,4 +1,4 @@
-use std::{marker::PhantomData, rc::Rc, sync::Arc};
+use std::sync::{Arc, Mutex};
 
 use ash::{
     prelude::VkResult,
@@ -13,7 +13,7 @@ use super::{device::QueueSubmitError, utils::associate_debug_name, Device};
 #[derive(Debug)]
 pub struct CommandBuffer {
     inner: ash::vk::CommandBuffer,
-    parent: Rc<CommandPool>,
+    parent: Arc<CommandPool>,
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -70,22 +70,20 @@ impl CommandBuffer {
     }
 }
 
-type PhantomUnsendUnsync = PhantomData<*mut ()>;
-
 #[derive(Debug)]
 pub struct CommandPool {
-    inner: ash::vk::CommandPool,
+    inner: std::sync::Mutex<ash::vk::CommandPool>,
     parent: Arc<Device>,
-    _phantom: PhantomUnsendUnsync,
 }
 
 impl Drop for CommandPool {
     fn drop(&mut self) {
         //SAFETY: inner derived from parent
         unsafe {
-            self.parent
-                .as_inner_ref()
-                .destroy_command_pool(self.inner, None)
+            self.parent.as_inner_ref().destroy_command_pool(
+                *self.inner.get_mut().unwrap_or_else(|e| e.into_inner()),
+                None,
+            )
         };
     }
 }
@@ -101,14 +99,13 @@ impl CommandPool {
             unsafe { device.as_inner_ref().create_command_pool(ci, None) }?;
         associate_debug_name!(device, inner, debug_name);
         Ok(CommandPool {
-            inner,
+            inner: Mutex::new(inner),
             parent: device.clone(),
-            _phantom: PhantomData,
         })
     }
 
     pub fn alloc_command_buffers(
-        self: Rc<Self>,
+        self: &Arc<Self>,
         count: u32,
         level: CommandBufferLevel,
         mut opt_f: Option<
@@ -116,8 +113,9 @@ impl CommandPool {
         >,
     ) -> VkResult<Vec<CommandBuffer>> {
         let mut cbs = Vec::with_capacity(count as usize);
+        let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let ai = CommandBufferAllocateInfo::default()
-            .command_pool(self.inner)
+            .command_pool(*inner)
             .command_buffer_count(count)
             .level(level);
 
@@ -145,11 +143,12 @@ impl CommandPool {
     }
 
     pub(crate) fn alloc_command_buffer(
-        self: &Rc<Self>,
+        self: &Arc<Self>,
         level: CommandBufferLevel,
     ) -> VkResult<CommandBuffer> {
+        let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let ai = CommandBufferAllocateInfo::default()
-            .command_pool(self.inner)
+            .command_pool(*inner)
             .command_buffer_count(1)
             .level(level);
         //SAFETY: Device and inner are from same place

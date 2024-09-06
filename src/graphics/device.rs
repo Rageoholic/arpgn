@@ -142,6 +142,10 @@ impl Device {
         })
     }
 
+    pub fn debug_device_ref(&self) -> Option<&ash::ext::debug_utils::Device> {
+        self.debug_utils_device.as_ref()
+    }
+
     pub unsafe fn get_queue(
         &self,
         family_index: u32,
