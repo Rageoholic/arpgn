@@ -13,10 +13,3 @@ macro_rules! associate_debug_name {
 }
 
 pub(crate) use associate_debug_name;
-
-macro_rules! debug_name {
-    ($device:expr, $($arg:tt)* ) => {
-        $device.is_debug().then(||format!($($arg)*))
-    };
-}
-pub(crate) use debug_name;

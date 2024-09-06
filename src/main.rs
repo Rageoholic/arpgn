@@ -11,6 +11,7 @@ use winit::{
 };
 
 mod graphics;
+mod utils;
 
 #[derive(Debug, StructOpt)]
 struct Opt {

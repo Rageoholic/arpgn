@@ -55,6 +55,7 @@ use descriptor_sets::{DescriptorPool, DescriptorSet, DescriptorSetLayout};
 use device::Device;
 use instance::Instance;
 
+use super::utils::debug_string;
 use pipeline::Pipeline;
 use pipeline_layout::PipelineLayout;
 use render_pass::RenderPass;
@@ -65,7 +66,7 @@ use strum::EnumString;
 use surface::Surface;
 use swapchain::Swapchain;
 use sync_objects::{Fence, Semaphore};
-use utils::{associate_debug_name, debug_name};
+use utils::associate_debug_name;
 use vek::{Mat4, Vec2, Vec3};
 use vk_mem::{Alloc, AllocationCreateFlags};
 use winit::{
@@ -256,7 +257,7 @@ impl SurfaceDerived {
                     present_queue_index,
                     graphics_queue_index,
                     old_swapchain,
-                    debug_name!(device, "Main Swapchain"),
+                    debug_string!(device.is_debug(), "Main Swapchain"),
                 )
             }
             .map_err(|_| SwapchainCreation)?,
@@ -333,8 +334,8 @@ impl SurfaceDerived {
                         device,
                         &msaa_color_attachment_ci,
                         &msaa_color_attachment_ai,
-                        debug_name!(
-                            device,
+                        debug_string!(
+                            device.is_debug(),
                             "Multisample Color Attachment Image [{}]",
                             i
                         ),
@@ -361,8 +362,8 @@ impl SurfaceDerived {
                 GpuImageView::new(
                     &msaa_color_attachment_image,
                     &msaa_color_attachment_view_ci,
-                    debug_name!(
-                        device,
+                    debug_string!(
+                        device.is_debug(),
                         "Multisample Attachment Image View [{}]",
                         i
                     ),
@@ -385,7 +386,7 @@ impl SurfaceDerived {
             RenderPass::new(
                 device,
                 &render_pass_ci,
-                debug_name!(device, "Main render pass"),
+                debug_string!(device.is_debug(), "Main render pass"),
             )
         }
         .map_err(|e| UnknownVulkan("creating render pass".to_owned(), e))?;
@@ -761,7 +762,7 @@ impl Context {
                     &instance,
                     scored_phys_dev.phys_dev,
                     &dev_ci,
-                    debug_name!(instance, "Main Device"),
+                    debug_string!(true, "Main Device"),
                 )
             }
             .map_err(|_| DeviceCreation)?,
@@ -779,7 +780,7 @@ impl Context {
             ShaderStageFlags::VERTEX,
             "main",
             None,
-            debug_name!(device, "Vertex Shader Module"),
+            debug_string!(device.is_debug(), "Vertex Shader Module"),
         );
         let frag_shader_path = Path::new("shaders/shader.frag");
         let frag_shader_mod = ShaderModule::new(
@@ -789,7 +790,7 @@ impl Context {
             ShaderStageFlags::FRAGMENT,
             "main",
             None,
-            debug_name!(device, "Fragment Shader Module"),
+            debug_string!(device.is_debug(), "Fragment Shader Module"),
         );
 
         let (vert_shader_mod, frag_shader_mod) =
@@ -821,7 +822,7 @@ impl Context {
             DescriptorSetLayout::new(
                 &device,
                 &descriptor_set_layout_ci,
-                debug_name!(device, "Descriptor Set Layout"),
+                debug_string!(device.is_debug(), "Descriptor Set Layout"),
             )
         }
         .map_err(|_| ContextCreationError::DescriptorSetCreation)?;
@@ -847,7 +848,7 @@ impl Context {
                 DescriptorPool::new(
                     &device,
                     &descriptor_pool_ci,
-                    debug_name!(device, "Descriptor Pool"),
+                    debug_string!(device.is_debug(), "Descriptor Pool"),
                 )
             }
             .map_err(|_| DescriptorSetCreation)?,
@@ -876,7 +877,7 @@ impl Context {
 
         let pipeline_layout =
             //SAFETY: Valid ci
-            unsafe { PipelineLayout::new(&device, &pipeline_layout_ci,debug_name!(device,"Pipeline layout")) }
+            unsafe { PipelineLayout::new(&device, &pipeline_layout_ci,debug_string!(device.is_debug(),"Pipeline layout")) }
                 .map_err(|e| {
                     UnknownVulkan(
                         "creating pipeline layout".into(),
@@ -892,7 +893,7 @@ impl Context {
                 CommandPool::new(
                     &device,
                     &graphics_command_pool_ci,
-                    debug_name!(device, "Render command pool"),
+                    debug_string!(device.is_debug(), "Render command pool"),
                 )
             }
             .map_err(|_| CommandBufferCreation)?,
@@ -968,7 +969,7 @@ impl Context {
                         &device,
                         &vertex_buffer_ci,
                         &vertex_buffer_ai,
-                        debug_name!(device, "Vertex buffer {}", i),
+                        debug_string!(device.is_debug(), "Vertex buffer {}", i),
                     )
                 }
                 .unwrap(),
@@ -980,7 +981,7 @@ impl Context {
                         &device,
                         &index_buffer_ci,
                         &index_buffer_ai,
-                        debug_name!(device, "Index buffer {}", i),
+                        debug_string!(device.is_debug(), "Index buffer {}", i),
                     )
                 }
                 .unwrap(),
@@ -992,7 +993,11 @@ impl Context {
                         &device,
                         &uniform_buffer_ci,
                         &uniform_buffer_ai,
-                        debug_name!(device, "Uniform buffer {}", i),
+                        debug_string!(
+                            device.is_debug(),
+                            "Uniform buffer {}",
+                            i
+                        ),
                     )
                 }
                 .unwrap(),
@@ -1000,14 +1005,22 @@ impl Context {
             image_available_semaphores.push(
                 Semaphore::new(
                     &device,
-                    debug_name!(device, "image_available_semaphore [{}]", i),
+                    debug_string!(
+                        device.is_debug(),
+                        "image_available_semaphore [{}]",
+                        i,
+                    ),
                 )
                 .unwrap(),
             );
             render_complete_semaphores.push(
                 Semaphore::new(
                     &device,
-                    debug_name!(device, "render_complete_semaphore [{}]", i),
+                    debug_string!(
+                        device.is_debug(),
+                        "render_complete_semaphore [{}]",
+                        i,
+                    ),
                 )
                 .unwrap(),
             );
@@ -1015,7 +1028,11 @@ impl Context {
                 Fence::new(
                     &device,
                     true,
-                    debug_name!(device, "prev_render_complete_fence [{}]", i),
+                    debug_string!(
+                        device.is_debug(),
+                        "prev_render_complete_fence [{}]",
+                        i,
+                    ),
                 )
                 .unwrap(),
             );
@@ -1030,7 +1047,7 @@ impl Context {
                 CommandPool::new(
                     &device,
                     &transfer_command_pool_ci,
-                    debug_name!(device, "Transfer Command Pool"),
+                    debug_string!(device.is_debug(), "Transfer Command Pool"),
                 )
             }
             .unwrap(),
@@ -1061,7 +1078,7 @@ impl Context {
             GpuImageView::new(
                 &gpu_image,
                 &image_view_ci,
-                debug_name!(device, "Texture image view"),
+                debug_string!(device.is_debug(), "Texture image view"),
             )
         }
         .unwrap();
@@ -1086,7 +1103,7 @@ impl Context {
             TextureSampler::new(
                 &device,
                 &sampler_ci,
-                debug_name!(device, "Texture sampler"),
+                debug_string!(device.is_debug(), "Texture sampler"),
             )
         }
         .unwrap();
@@ -1631,7 +1648,7 @@ impl GpuImage {
                 device,
                 &staging_buffer_ci,
                 &staging_buffer_ai,
-                debug_name!(device, "Staging buffer"),
+                debug_string!(device.is_debug(), "Staging buffer"),
             )
         }
         .unwrap();
@@ -1680,7 +1697,7 @@ impl GpuImage {
                 device,
                 &image_create_info,
                 &image_allocation_info,
-                debug_name!(device, "Texture Image"),
+                debug_string!(device.is_debug(), "Texture Image"),
             )
         }
         .unwrap();
@@ -1738,8 +1755,8 @@ impl GpuImage {
 
         let transfer_complete_semaphore = Semaphore::new(
             device,
-            debug_name!(
-                device,
+            debug_string!(
+                device.is_debug(),
                 "Texture Transfer Complete Semaphore For {:?}",
                 path.clone().as_ref().to_str().unwrap()
             ),
@@ -1816,7 +1833,7 @@ impl GpuImage {
         let texture_ready_fence = Fence::new(
             device,
             false,
-            debug_name!(device, "Texture Ready Fence"),
+            debug_string!(device.is_debug(), "Texture Ready Fence"),
         )
         .unwrap();
 
@@ -2067,7 +2084,7 @@ impl GpuImage {
         device: &Arc<Device>,
         image_create_info: &ImageCreateInfo,
         image_allocation_info: &vk_mem::AllocationCreateInfo,
-        debug_name: Option<String>,
+        debug_string: Option<String>,
     ) -> VkResult<Self> {
         //SAFETY: valid cis
         let (inner, allocation) = unsafe {
@@ -2076,7 +2093,7 @@ impl GpuImage {
                 .create_image(image_create_info, image_allocation_info)
         }?;
 
-        associate_debug_name!(device, inner, debug_name);
+        associate_debug_name!(device, inner, debug_string);
 
         Ok(Self {
             parent: device.clone(),
@@ -2121,7 +2138,7 @@ impl GpuImageView {
     unsafe fn new(
         parent_image: &Arc<GpuImage>,
         ci: &ImageViewCreateInfo,
-        debug_name: Option<String>,
+        debug_string: Option<String>,
     ) -> VkResult<Self> {
         let inner = unsafe {
             parent_image
@@ -2130,7 +2147,7 @@ impl GpuImageView {
                 .create_image_view(ci, None)
         }?;
 
-        associate_debug_name!(parent_image.parent, inner, debug_name);
+        associate_debug_name!(parent_image.parent, inner, debug_string);
 
         Ok(Self {
             parent: parent_image.clone(),
@@ -2155,11 +2172,11 @@ impl TextureSampler {
     unsafe fn new(
         device: &Arc<Device>,
         sampler_ci: &SamplerCreateInfo,
-        debug_name: Option<String>,
+        debug_string: Option<String>,
     ) -> VkResult<Self> {
         let inner =
             unsafe { device.as_inner_ref().create_sampler(sampler_ci, None) }?;
-        associate_debug_name!(device, inner, debug_name);
+        associate_debug_name!(device, inner, debug_string);
         Ok(Self {
             parent: device.clone(),
             inner,
