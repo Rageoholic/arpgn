@@ -22,8 +22,8 @@ use std::{
 use ash::{
     prelude::VkResult,
     vk::{
-        DebugUtilsObjectNameInfoEXT, DeviceCreateInfo, Fence, Handle, PhysicalDevice, Queue,
-        Result as RawVkResult, SubmitInfo,
+        self, DebugUtilsObjectNameInfoEXT, DeviceCreateInfo, Fence, Format, Handle, PhysicalDevice,
+        Queue, Result as RawVkResult, SubmitInfo,
     },
 };
 
@@ -67,6 +67,13 @@ pub enum QueueRetrievalError {
 }
 
 impl Device {
+    pub fn get_format_properties(&self, format: Format) -> vk::FormatProperties {
+        unsafe {
+            self.parent
+                .as_inner_ref()
+                .get_physical_device_format_properties(self.phys_dev, format)
+        }
+    }
     pub fn is_debug(&self) -> bool {
         self.debug_utils_device.is_some()
     }

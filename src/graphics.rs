@@ -4,7 +4,7 @@ use std::{
     fmt::{Debug, Display},
     marker::PhantomData,
     mem::{offset_of, size_of, size_of_val},
-    ops::Deref,
+    ops::{Deref, MulAssign},
     path::Path,
     rc::Rc,
     sync::Arc,
@@ -17,19 +17,21 @@ use ash::{
         self, api_version_major, api_version_minor, api_version_patch, AccessFlags,
         ApplicationInfo, AttachmentDescription, AttachmentLoadOp, AttachmentReference,
         AttachmentStoreOp, BlendFactor, BorderColor, BufferCreateInfo, BufferImageCopy,
-        BufferUsageFlags, ClearColorValue, ClearValue, ColorComponentFlags, CommandBufferBeginInfo,
-        CommandBufferLevel, CommandBufferUsageFlags, CommandPoolCreateFlags, CommandPoolCreateInfo,
-        CompareOp, CullModeFlags, DebugUtilsLabelEXT, DebugUtilsMessageSeverityFlagsEXT,
-        DebugUtilsMessageTypeFlagsEXT, DebugUtilsMessengerCreateInfoEXT, DependencyFlags,
-        DescriptorBufferInfo, DescriptorImageInfo, DescriptorPoolCreateInfo, DescriptorPoolSize,
+        BufferUsageFlags, ClearColorValue, ClearDepthStencilValue, ClearValue, ColorComponentFlags,
+        CommandBufferBeginInfo, CommandBufferLevel, CommandBufferUsageFlags,
+        CommandPoolCreateFlags, CommandPoolCreateInfo, CompareOp, CullModeFlags,
+        DebugUtilsLabelEXT, DebugUtilsMessageSeverityFlagsEXT, DebugUtilsMessageTypeFlagsEXT,
+        DebugUtilsMessengerCreateInfoEXT, DependencyFlags, DescriptorBufferInfo,
+        DescriptorImageInfo, DescriptorPoolCreateInfo, DescriptorPoolSize,
         DescriptorSetAllocateInfo, DescriptorSetLayoutBinding, DescriptorSetLayoutCreateInfo,
         DescriptorType, DeviceCreateInfo, DeviceQueueCreateInfo, Extent3D, Filter, Format,
-        FrontFace, GraphicsPipelineCreateInfo, ImageAspectFlags, ImageBlit, ImageCreateInfo,
-        ImageLayout, ImageMemoryBarrier, ImageSubresourceLayers, ImageSubresourceRange,
-        ImageTiling, ImageType, ImageUsageFlags, ImageView, ImageViewCreateInfo, ImageViewType,
-        IndexType, InstanceCreateInfo, LogicOp, MemoryPropertyFlags, Offset3D, PhysicalDevice,
-        PhysicalDeviceType, PipelineBindPoint, PipelineColorBlendAttachmentState,
-        PipelineColorBlendStateCreateInfo, PipelineInputAssemblyStateCreateInfo,
+        FormatFeatureFlags, FrontFace, GraphicsPipelineCreateInfo, ImageAspectFlags, ImageBlit,
+        ImageCreateInfo, ImageLayout, ImageMemoryBarrier, ImageSubresourceLayers,
+        ImageSubresourceRange, ImageTiling, ImageType, ImageUsageFlags, ImageView,
+        ImageViewCreateInfo, ImageViewType, IndexType, InstanceCreateInfo, LogicOp,
+        MemoryPropertyFlags, Offset3D, PhysicalDevice, PhysicalDeviceType, PipelineBindPoint,
+        PipelineColorBlendAttachmentState, PipelineColorBlendStateCreateInfo,
+        PipelineDepthStencilStateCreateInfo, PipelineInputAssemblyStateCreateInfo,
         PipelineLayoutCreateInfo, PipelineMultisampleStateCreateInfo,
         PipelineRasterizationStateCreateInfo, PipelineShaderStageCreateInfo, PipelineStageFlags,
         PipelineVertexInputStateCreateInfo, PipelineViewportStateCreateInfo, PolygonMode,
@@ -59,7 +61,10 @@ use surface::Surface;
 use swapchain::Swapchain;
 use sync_objects::{Fence, Semaphore};
 use utils::associate_debug_name;
-use vek::{Mat4, Vec2, Vec3};
+use vek::{
+    num_traits::{One, Zero},
+    Mat4, Vec2, Vec3, Vec4,
+};
 use vk_mem::{Alloc, AllocationCreateFlags};
 use winit::{
     dpi::{LogicalSize, PhysicalSize, Size},
@@ -91,28 +96,48 @@ const MAX_FRAMES_IN_FLIGHT: u32 = 2;
 
 const VERTICES: &[Vertex] = &[
     Vertex {
-        pos: Vec2::new(-0.5, -0.5),
+        pos: Vec3::new(-0.5, -0.5, 0.0),
         col: Vec3::new(0.0, 0.0, 1.0),
         coord: Vec2::new(0.0, 1.0),
     },
     Vertex {
-        pos: Vec2::new(-0.5, 0.5),
+        pos: Vec3::new(-0.5, 0.5, 0.0),
         col: Vec3::new(0.0, 1.0, 1.0),
         coord: Vec2::new(0.0, 0.0),
     },
     Vertex {
-        pos: Vec2::new(0.5, 0.5),
+        pos: Vec3::new(0.5, 0.5, 0.0),
         col: Vec3::new(1.0, 1.0, 1.0),
         coord: Vec2::new(1.0, 0.0),
     },
     Vertex {
-        pos: Vec2::new(0.5, -0.5),
+        pos: Vec3::new(0.5, -0.5, 0.0),
+        col: Vec3::new(1.0, 0.0, 1.0),
+        coord: Vec2::new(1.0, 1.0),
+    },
+    Vertex {
+        pos: Vec3::new(-0.5, -0.5, -1.0),
+        col: Vec3::new(0.0, 0.0, 1.0),
+        coord: Vec2::new(0.0, 1.0),
+    },
+    Vertex {
+        pos: Vec3::new(-0.5, 0.5, -1.0),
+        col: Vec3::new(0.0, 1.0, 1.0),
+        coord: Vec2::new(0.0, 0.0),
+    },
+    Vertex {
+        pos: Vec3::new(0.5, 0.5, -1.0),
+        col: Vec3::new(1.0, 1.0, 1.0),
+        coord: Vec2::new(1.0, 0.0),
+    },
+    Vertex {
+        pos: Vec3::new(0.5, -0.5, -1.0),
         col: Vec3::new(1.0, 0.0, 1.0),
         coord: Vec2::new(1.0, 1.0),
     },
 ];
 
-const INDICES: &[u16] = &[0, 1, 2, 0, 2, 3];
+const INDICES: &[u16] = &[0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7];
 
 #[repr(C)]
 #[derive(Debug, bytemuck::Pod, bytemuck::Zeroable, Clone, Copy)]
@@ -125,7 +150,7 @@ struct Uniform {
 #[repr(C)]
 #[derive(Debug, bytemuck::Pod, bytemuck::Zeroable, Clone, Copy)]
 struct Vertex {
-    pos: vek::Vec2<f32>,
+    pos: vek::Vec3<f32>,
     col: Vec3<f32>,
     coord: Vec2<f32>,
 }
@@ -135,7 +160,7 @@ impl Vertex {
             VertexInputAttributeDescription::default()
                 .location(0)
                 .binding(binding)
-                .format(Format::R32G32_SFLOAT)
+                .format(Format::R32G32B32_SFLOAT)
                 .offset(offset_of!(Vertex, pos) as u32),
             VertexInputAttributeDescription::default()
                 .location(1)
@@ -253,6 +278,22 @@ impl SurfaceDerived {
             }
             .map_err(|_| SwapchainCreation)?,
         );
+        let candidate_depth_formats = [
+            Format::D32_SFLOAT,
+            Format::D24_UNORM_S8_UINT,
+            Format::D32_SFLOAT_S8_UINT,
+        ];
+
+        let depth_format = candidate_depth_formats
+            .iter()
+            .copied()
+            .find(|f| {
+                let props = device.get_format_properties(*f);
+                props
+                    .optimal_tiling_features
+                    .contains(FormatFeatureFlags::DEPTH_STENCIL_ATTACHMENT)
+            })
+            .ok_or(RenderSetupError::NoSupportedDepthFormat)?;
         let viewports = [swapchain.default_viewport()];
         let scissors = [swapchain.as_rect()];
         let color_attachment = AttachmentDescription::default()
@@ -273,23 +314,37 @@ impl SurfaceDerived {
             .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
             .initial_layout(vk::ImageLayout::UNDEFINED)
             .final_layout(vk::ImageLayout::PRESENT_SRC_KHR);
+        let depth_attachment = vk::AttachmentDescription::default()
+            .format(depth_format)
+            .samples(multisample_flag)
+            .load_op(AttachmentLoadOp::CLEAR)
+            .store_op(AttachmentStoreOp::STORE)
+            .stencil_load_op(AttachmentLoadOp::DONT_CARE)
+            .stencil_store_op(AttachmentStoreOp::DONT_CARE)
+            .initial_layout(ImageLayout::UNDEFINED)
+            .final_layout(ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
 
         let color_attachment_ref = AttachmentReference::default()
             .attachment(0)
             .layout(ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
 
         let color_resolve_attachment_ref = AttachmentReference::default()
-            .attachment(1)
+            .attachment(2)
             .layout(ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
+        let depth_attachment_ref = AttachmentReference::default()
+            .attachment(1)
+            .layout(ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
 
         let color_attachments = &[color_attachment_ref];
         let resolve_attachments = &[color_resolve_attachment_ref];
+
         let subpass = SubpassDescription::default()
             .pipeline_bind_point(PipelineBindPoint::GRAPHICS)
             .color_attachments(color_attachments)
-            .resolve_attachments(resolve_attachments);
+            .resolve_attachments(resolve_attachments)
+            .depth_stencil_attachment(&depth_attachment_ref);
         let subpasses = &[subpass];
-        let attachments = [color_attachment, color_resolve_attachment];
+        let attachments = [color_attachment, depth_attachment, color_resolve_attachment];
 
         let msaa_color_attachment_ci = ImageCreateInfo::default()
             .extent(
@@ -312,7 +367,13 @@ impl SurfaceDerived {
             ..Default::default()
         };
 
+        let depth_attachment_ci = msaa_color_attachment_ci
+            .usage(ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT)
+            .format(depth_format);
+        let depth_attachment_ai = msaa_color_attachment_ai.clone();
+
         let mut msaa_color_attachment_views = Vec::with_capacity(swapchain.image_count() as usize);
+        let mut depth_attachment_views = Vec::with_capacity(swapchain.image_count() as usize);
 
         for i in 0..swapchain.image_count() {
             let msaa_color_attachment_image = Arc::new(
@@ -365,6 +426,48 @@ impl SurfaceDerived {
                 )
             })?;
             msaa_color_attachment_views.push(msaa_color_attachment_image_view);
+            let depth_attachment_image = Arc::new(
+                unsafe {
+                    GpuImage::new(
+                        device,
+                        &depth_attachment_ci,
+                        &depth_attachment_ai,
+                        debug_string!(device.is_debug(), "Depth Attachment Image [{}]", i),
+                    )
+                }
+                .map_err(|e| {
+                    RenderSetupError::UnknownVulkan(
+                        format!("Could not create Multisample Color Attachment Image {}", i),
+                        e,
+                    )
+                })?,
+            );
+            let depth_attachment_subresource_range = ImageSubresourceRange::default()
+                .aspect_mask(ImageAspectFlags::DEPTH)
+                .base_mip_level(0)
+                .level_count(1)
+                .base_array_layer(0)
+                .layer_count(1);
+
+            let depth_attachment_view_ci = ImageViewCreateInfo::default()
+                .image(depth_attachment_image.inner)
+                .format(depth_format)
+                .subresource_range(depth_attachment_subresource_range)
+                .view_type(ImageViewType::TYPE_2D);
+            let depth_attachment_image_view = unsafe {
+                GpuImageView::new(
+                    &depth_attachment_image,
+                    &depth_attachment_view_ci,
+                    debug_string!(device.is_debug(), "Depth Attachment Image View [{}]", i),
+                )
+            }
+            .map_err(|e| {
+                RenderSetupError::UnknownVulkan(
+                    format!("Could not create MSAA Color Attachment Image View [{}]", i),
+                    e,
+                )
+            })?;
+            depth_attachment_views.push(depth_attachment_image_view);
         }
 
         let viewport_state = PipelineViewportStateCreateInfo::default()
@@ -424,6 +527,11 @@ impl SurfaceDerived {
             .logic_op_enable(false)
             .logic_op(LogicOp::COPY)
             .blend_constants([0.0, 0.0, 0.0, 0.0]);
+        let depth_stencil_state = PipelineDepthStencilStateCreateInfo::default()
+            .depth_test_enable(true)
+            .depth_write_enable(true)
+            .depth_compare_op(CompareOp::LESS)
+            .stencil_test_enable(false);
 
         let pipeline_ci = GraphicsPipelineCreateInfo::default()
             .stages(&shader_stages)
@@ -433,6 +541,7 @@ impl SurfaceDerived {
             .rasterization_state(&rasterization_state)
             .multisample_state(&multisample_state)
             .color_blend_state(&color_blend_state)
+            .depth_stencil_state(&depth_stencil_state)
             .layout(pipeline_layout.get_inner())
             .render_pass(render_pass.get_inner())
             .subpass(0);
@@ -450,6 +559,7 @@ impl SurfaceDerived {
             .create_compatible_framebuffers(
                 &render_pass,
                 Some(msaa_color_attachment_views),
+                Some(depth_attachment_views),
                 Some(|i, _| Some(format!("Swapchain framebuffer {}", i))),
             )
             .map_err(|e| UnknownVulkan("While creating framebuffers".to_owned(), e))?;
@@ -469,6 +579,8 @@ pub enum RenderSetupError {
     SwapchainCreation,
     #[error("Unknown vulkan error while {0}. Error code {1:?}")]
     UnknownVulkan(String, ash::vk::Result),
+    #[error("No supported depth format")]
+    NoSupportedDepthFormat,
 }
 
 #[allow(dead_code)]
@@ -1181,17 +1293,13 @@ impl Context {
                         Vec3::broadcast(0.),
                         Vec3::unit_z(),
                     );
-                    let mut proj: Mat4<f32> = Mat4::infinite_perspective_rh(
+                    let vulkan_correction_matrix = Mat4::from_diagonal(Vec4::new(1., -1., 1., 1.));
+                    let proj: Mat4<f32> = Mat4::perspective_rh_zo(
                         45f32.to_radians(),
                         sd.swapchain.get_aspect_ratio(),
                         0.01,
-                    );
-
-                    //Need to invert the projection matrix in order to flip the y
-                    //axis properly without influencing other coords. Also turns it
-                    //into a right hand coordinate space which is what I want.
-                    //Thanks vulkan.
-                    proj[(1, 1)] *= -1f32;
+                        10.0,
+                    ) * vulkan_correction_matrix;
 
                     vertex_buffer.upload_data(VERTICES);
                     index_buffer.upload_data(INDICES);
@@ -1247,11 +1355,19 @@ impl Context {
                                 dev.cmd_begin_render_pass(
                                     cb,
                                     &RenderPassBeginInfo::default()
-                                        .clear_values(&[ClearValue {
-                                            color: ClearColorValue {
-                                                float32: [0.0, 0.0, 0.0, 1.0],
+                                        .clear_values(&[
+                                            ClearValue {
+                                                color: ClearColorValue {
+                                                    float32: [0.0, 0.0, 0.0, 1.0],
+                                                },
                                             },
-                                        }])
+                                            ClearValue {
+                                                depth_stencil: ClearDepthStencilValue {
+                                                    depth: 1.0,
+                                                    stencil: 0,
+                                                },
+                                            },
+                                        ])
                                         .render_area(sd.swapchain.as_rect())
                                         .render_pass(sd.render_pass.get_inner())
                                         .framebuffer(fb.get_inner()),
@@ -2056,5 +2172,20 @@ impl TextureSampler {
             parent: device.clone(),
             inner,
         })
+    }
+}
+
+trait Mat4Ext<T> {
+    fn from_diagonal(v: Vec4<T>) -> Mat4<T>;
+}
+
+impl<T: Zero + One + MulAssign> Mat4Ext<T> for Mat4<T> {
+    fn from_diagonal(v: Vec4<T>) -> Mat4<T> {
+        let mut mat = Mat4::identity();
+        mat[(0, 0)] *= v.x;
+        mat[(1, 1)] *= v.y;
+        mat[(2, 2)] *= v.z;
+        mat[(3, 3)] *= v.w;
+        mat
     }
 }
