@@ -213,6 +213,7 @@ pub struct Context {
 pub struct ContextCreateOpts {
     pub graphics_validation_layers: ValidationLevel,
     pub dimensions: Option<Size>,
+    pub shared_transfer_graphics_queue: bool,
 }
 
 #[derive(Debug, StructOpt, Default, PartialEq, Eq, EnumString, Clone, Copy)]
@@ -715,7 +716,12 @@ impl Context {
             .fold(None, |best_found, current_dev| {
                 //SAFETY: We derived current_dev from device
                 let score = unsafe {
-                    evaluate_physical_device(&instance, *current_dev, &surface)
+                    evaluate_physical_device(
+                        &instance,
+                        *current_dev,
+                        &surface,
+                        opts.shared_transfer_graphics_queue,
+                    )
                 };
                 if score > best_found {
                     score
@@ -1408,6 +1414,7 @@ unsafe fn evaluate_physical_device(
     instance: &Instance,
     phys_dev: PhysicalDevice,
     surface: &Surface,
+    shared_graphics_transfer_queue: bool,
 ) -> Option<ScoredPhysDev> {
     //SAFETY:phys_dev must be derived from instance
     let properties =
@@ -1464,19 +1471,24 @@ unsafe fn evaluate_physical_device(
                 .map(|(i, _)| i as u32)
         });
 
-    let transfer_queue_index = properties
-        .queue_families
-        .iter()
-        .copied()
-        .enumerate()
-        .find(|(_qfi, props)| {
-            props.queue_flags.contains(QueueFlags::TRANSFER)
-                && !(props
-                    .queue_flags
-                    .contains(QueueFlags::GRAPHICS | QueueFlags::COMPUTE))
-        })
-        .map(|(i, _props)| i as u32)
-        .or(graphics_queue_index);
+    let transfer_queue_index = shared_graphics_transfer_queue
+        .then_some(())
+        .and(graphics_queue_index)
+        .or_else(|| {
+            properties
+                .queue_families
+                .iter()
+                .copied()
+                .enumerate()
+                .find(|(_qfi, props)| {
+                    props.queue_flags.contains(QueueFlags::TRANSFER)
+                        && !(props.queue_flags.contains(
+                            QueueFlags::GRAPHICS | QueueFlags::COMPUTE,
+                        ))
+                })
+                .map(|(i, _props)| i as u32)
+                .or(graphics_queue_index)
+        });
     let shared_max_sample_count = {
         let counts = properties.props.limits.framebuffer_color_sample_counts
             & properties.props.limits.framebuffer_depth_sample_counts;

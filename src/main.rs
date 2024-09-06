@@ -17,6 +17,8 @@ mod utils;
 struct Opt {
     #[structopt(long, default_value = "None")]
     graphics_validation_level: graphics::ValidationLevel,
+    #[structopt(long)]
+    unified_graphics_transfer_queue: bool,
 }
 
 #[derive(Debug)]
@@ -35,6 +37,8 @@ impl ApplicationHandler for App {
                 event_loop,
                 graphics::ContextCreateOpts {
                     graphics_validation_layers: opts.graphics_validation_level,
+                    shared_transfer_graphics_queue: opts
+                        .unified_graphics_transfer_queue,
                     ..Default::default()
                 },
             ) {
