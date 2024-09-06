@@ -193,7 +193,7 @@ pub struct Context {
     index_buffers: Vec<ManagedMappableBuffer<u16>>,
     image_available_semaphores: Vec<Semaphore>,
     prev_frame_finished_fences: Vec<Fence>,
-    sync_index: usize,
+    frame_index: usize,
     render_complete_semaphores: Vec<Semaphore>,
     graphics_queue_index: u32,
     present_queue_index: u32,
@@ -1134,7 +1134,7 @@ impl Context {
         .unwrap();
 
         Ok(Context {
-            sync_index: 0,
+            frame_index: 0,
             win,
             command_buffers,
             uniform_descriptor_sets: descriptor_sets,
@@ -1197,9 +1197,10 @@ impl Context {
         if !self.minimized {
             match &mut self.surface_derived {
                 Some(sd) => {
-                    let sync_index = self.sync_index;
-                    self.sync_index =
-                        (self.sync_index + 1) % MAX_FRAMES_IN_FLIGHT as usize;
+                    let frame_index = self.frame_index;
+                    self.frame_index += 1;
+                    let sync_index =
+                        frame_index % MAX_FRAMES_IN_FLIGHT as usize;
                     let guard_fence =
                         &mut self.prev_frame_finished_fences[sync_index];
                     guard_fence.wait_and_reset().unwrap();
@@ -1265,6 +1266,25 @@ impl Context {
                             //SAFETY: We know dev and cb are linked. All other vars
                             //used are derived from device
                             unsafe {
+                                if let Some(debug_device) =
+                                    self.device.debug_device_ref()
+                                {
+                                    let label_name = CString::new(format!(
+                                        "Rendering frame {} si {} to fb {}",
+                                        frame_index, sync_index, fb_index
+                                    ))
+                                    .unwrap();
+
+                                    let debug_label =
+                                        DebugUtilsLabelEXT::default()
+                                            .label_name(&label_name)
+                                            .color(LIME);
+
+                                    debug_device.cmd_begin_debug_utils_label(
+                                        cb,
+                                        &debug_label,
+                                    );
+                                }
                                 dev.cmd_bind_descriptor_sets(
                                     cb,
                                     PipelineBindPoint::GRAPHICS,
@@ -1444,9 +1464,6 @@ unsafe fn evaluate_physical_device(
         let counts = properties.props.limits.framebuffer_color_sample_counts
             & properties.props.limits.framebuffer_depth_sample_counts;
         [
-            vk::SampleCountFlags::TYPE_64,
-            vk::SampleCountFlags::TYPE_32,
-            vk::SampleCountFlags::TYPE_16,
             vk::SampleCountFlags::TYPE_8,
             vk::SampleCountFlags::TYPE_4,
             vk::SampleCountFlags::TYPE_2,
@@ -1522,6 +1539,7 @@ unsafe fn evaluate_physical_device(
 const CYAN: [f32; 4] = [0., 0.976, 1., 1.0];
 const MAGENTA: [f32; 4] = [0.839, 0.067, 0.804, 1.0];
 const YELLOW: [f32; 4] = [0.957, 0.98, 0.424, 1.0];
+const LIME: [f32; 4] = [0.514, 0.969, 0.333, 1.0];
 
 fn map_multisample_flag_to_sample_count(flag: SampleCountFlags) -> u64 {
     match flag {
@@ -1812,6 +1830,25 @@ impl GpuImage {
                 &generate_mipmaps_begin_info,
                 texture_ready_fence.get_inner(),
                 |dev, cb| -> Result<(), ash::vk::Result> {
+                    let acquire_image_barrier = ImageMemoryBarrier::default()
+                        .src_queue_family_index(transfer_queue_index)
+                        .dst_queue_family_index(graphics_queue_index)
+                        .image(gpu_image.inner)
+                        .old_layout(ImageLayout::TRANSFER_DST_OPTIMAL)
+                        .new_layout(ImageLayout::TRANSFER_SRC_OPTIMAL)
+                        .subresource_range(whole_image_subresource_range);
+
+                    unsafe {
+                        dev.cmd_pipeline_barrier(
+                            cb,
+                            PipelineStageFlags::TRANSFER,
+                            PipelineStageFlags::TRANSFER,
+                            DependencyFlags::empty(),
+                            &[],
+                            &[],
+                            &[acquire_image_barrier],
+                        );
+                    }
                     let mut prev_level_preblit_barrier = None;
                     let mut image_barriers = Vec::with_capacity(2);
                     if let Some(debug_device) = device.debug_device_ref() {
