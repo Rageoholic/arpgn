@@ -1838,16 +1838,18 @@ impl GpuImage {
                         .new_layout(ImageLayout::TRANSFER_SRC_OPTIMAL)
                         .subresource_range(whole_image_subresource_range);
 
-                    unsafe {
-                        dev.cmd_pipeline_barrier(
-                            cb,
-                            PipelineStageFlags::TRANSFER,
-                            PipelineStageFlags::TRANSFER,
-                            DependencyFlags::empty(),
-                            &[],
-                            &[],
-                            &[acquire_image_barrier],
-                        );
+                    if transfer_queue_index != graphics_queue_index {
+                        unsafe {
+                            dev.cmd_pipeline_barrier(
+                                cb,
+                                PipelineStageFlags::TRANSFER,
+                                PipelineStageFlags::TRANSFER,
+                                DependencyFlags::empty(),
+                                &[],
+                                &[],
+                                &[acquire_image_barrier],
+                            );
+                        }
                     }
                     let mut prev_level_preblit_barrier = None;
                     let mut image_barriers = Vec::with_capacity(2);
