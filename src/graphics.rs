@@ -69,7 +69,7 @@ use utils::{associate_debug_name, debug_name};
 use vek::{Mat4, Vec2, Vec3};
 use vk_mem::{Alloc, AllocationCreateFlags};
 use winit::{
-    dpi::{LogicalSize, Size},
+    dpi::{LogicalSize, PhysicalSize, Size},
     event_loop::ActiveEventLoop,
     raw_window_handle::HasDisplayHandle,
     window::{Window, WindowAttributes, WindowId},
@@ -204,6 +204,8 @@ pub struct Context {
     start_time: Instant,
     _gpu_image_view: GpuImageView,
     _texture_sampler: TextureSampler,
+    multisample_flag: SampleCountFlags,
+    minimized: bool,
 }
 
 #[derive(Debug, Default)]
@@ -233,6 +235,7 @@ struct SurfaceDerived {
     render_pass: RenderPass,
 }
 impl SurfaceDerived {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         device: &Arc<Device>,
         surface: Arc<Surface>,
@@ -240,6 +243,7 @@ impl SurfaceDerived {
         present_queue_index: u32,
         shader_modules: &[&ShaderModule],
         pipeline_layout: &PipelineLayout,
+        multisample_flag: SampleCountFlags,
         old_swapchain: Option<&Arc<Swapchain>>,
     ) -> Result<Self, RenderSetupError> {
         use RenderSetupError::*;
@@ -261,25 +265,112 @@ impl SurfaceDerived {
         let scissors = [swapchain.as_rect()];
         let color_attachment = AttachmentDescription::default()
             .format(swapchain.get_format())
-            .samples(SampleCountFlags::TYPE_1)
+            .samples(multisample_flag)
             .load_op(AttachmentLoadOp::CLEAR)
             .store_op(AttachmentStoreOp::STORE)
             .stencil_load_op(AttachmentLoadOp::DONT_CARE)
             .stencil_store_op(AttachmentStoreOp::DONT_CARE)
             .initial_layout(ImageLayout::UNDEFINED)
-            .final_layout(ImageLayout::PRESENT_SRC_KHR);
+            .final_layout(ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
+        let color_resolve_attachment = vk::AttachmentDescription::default()
+            .format(swapchain.get_format())
+            .samples(vk::SampleCountFlags::TYPE_1)
+            .load_op(vk::AttachmentLoadOp::DONT_CARE)
+            .store_op(vk::AttachmentStoreOp::STORE)
+            .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
+            .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
+            .initial_layout(vk::ImageLayout::UNDEFINED)
+            .final_layout(vk::ImageLayout::PRESENT_SRC_KHR);
 
-        let color_attachment_ref: AttachmentReference =
-            AttachmentReference::default()
-                .attachment(0)
-                .layout(ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
+        let color_attachment_ref = AttachmentReference::default()
+            .attachment(0)
+            .layout(ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
+
+        let color_resolve_attachment_ref = AttachmentReference::default()
+            .attachment(1)
+            .layout(ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
 
         let color_attachments = &[color_attachment_ref];
+        let resolve_attachments = &[color_resolve_attachment_ref];
         let subpass = SubpassDescription::default()
             .pipeline_bind_point(PipelineBindPoint::GRAPHICS)
-            .color_attachments(color_attachments);
+            .color_attachments(color_attachments)
+            .resolve_attachments(resolve_attachments);
         let subpasses = &[subpass];
-        let attachments = [color_attachment];
+        let attachments = [color_attachment, color_resolve_attachment];
+
+        let msaa_color_attachment_ci = ImageCreateInfo::default()
+            .extent(
+                Extent3D::default()
+                    .depth(1)
+                    .width(swapchain.width())
+                    .height(swapchain.height()),
+            )
+            .samples(multisample_flag)
+            .format(swapchain.get_format())
+            .tiling(ImageTiling::OPTIMAL)
+            .usage(
+                ImageUsageFlags::COLOR_ATTACHMENT
+                    | ImageUsageFlags::TRANSIENT_ATTACHMENT,
+            )
+            .mip_levels(1)
+            .array_layers(1)
+            .image_type(ImageType::TYPE_2D);
+
+        let msaa_color_attachment_ai = vk_mem::AllocationCreateInfo {
+            usage: vk_mem::MemoryUsage::AutoPreferDevice,
+
+            ..Default::default()
+        };
+
+        let mut msaa_color_attachment_views =
+            Vec::with_capacity(swapchain.image_count() as usize);
+
+        for i in 0..swapchain.image_count() {
+            let msaa_color_attachment_image = Arc::new(
+                unsafe {
+                    GpuImage::new(
+                        device,
+                        &msaa_color_attachment_ci,
+                        &msaa_color_attachment_ai,
+                        debug_name!(
+                            device,
+                            "Multisample Color Attachment Image [{}]",
+                            i
+                        ),
+                    )
+                }
+                .map_err(|e|
+                    RenderSetupError::UnknownVulkan(
+                    format!("Could not create Multisample Color Attachment Image {}", i), e))?,
+            );
+            let msaa_color_attachment_subresource_range =
+                ImageSubresourceRange::default()
+                    .aspect_mask(ImageAspectFlags::COLOR)
+                    .base_mip_level(0)
+                    .level_count(1)
+                    .base_array_layer(0)
+                    .layer_count(1);
+
+            let msaa_color_attachment_view_ci = ImageViewCreateInfo::default()
+                .image(msaa_color_attachment_image.inner)
+                .format(swapchain.get_format())
+                .subresource_range(msaa_color_attachment_subresource_range)
+                .view_type(ImageViewType::TYPE_2D);
+            let msaa_color_attachment_image_view = unsafe {
+                GpuImageView::new(
+                    &msaa_color_attachment_image,
+                    &msaa_color_attachment_view_ci,
+                    debug_name!(
+                        device,
+                        "Multisample Attachment Image View [{}]",
+                        i
+                    ),
+                )
+            }
+            .unwrap();
+            msaa_color_attachment_views.push(msaa_color_attachment_image_view);
+        }
 
         let viewport_state = PipelineViewportStateCreateInfo::default()
             .viewports(&viewports)
@@ -331,7 +422,7 @@ impl SurfaceDerived {
                 .front_face(FrontFace::CLOCKWISE)
                 .depth_bias_enable(false);
         let multisample_state = PipelineMultisampleStateCreateInfo::default()
-            .rasterization_samples(SampleCountFlags::TYPE_1);
+            .rasterization_samples(multisample_flag);
 
         let attachments = [PipelineColorBlendAttachmentState::default()
             .dst_color_blend_factor(BlendFactor::ONE)
@@ -366,6 +457,7 @@ impl SurfaceDerived {
         let swapchain_framebuffers = swapchain
             .create_compatible_framebuffers(
                 &render_pass,
+                Some(msaa_color_attachment_views),
                 Some(|i, _| Some(format!("Swapchain framebuffer {}", i))),
             )
             .map_err(|e| {
@@ -634,7 +726,7 @@ impl Context {
         let graphics_queue_index = scored_phys_dev.graphics_queue_index;
         let present_queue_index = scored_phys_dev.present_queue_index;
         let transfer_queue_index = scored_phys_dev.transfer_queue_index;
-
+        let multisample_flag = scored_phys_dev.multisample_flag;
         log::warn!("Graphics queue index: {}", graphics_queue_index);
         log::warn!("Transfer queue index: {}", transfer_queue_index);
         log::warn!("Present queue index: {}", present_queue_index);
@@ -968,7 +1060,7 @@ impl Context {
         let gpu_image_view = unsafe {
             GpuImageView::new(
                 &gpu_image,
-                image_view_ci,
+                &image_view_ci,
                 debug_name!(device, "Texture image view"),
             )
         }
@@ -1054,6 +1146,7 @@ impl Context {
                 present_queue_index,
                 &[&vert_shader_mod, &frag_shader_mod],
                 &pipeline_layout,
+                multisample_flag,
                 None,
             )?),
             graphics_queue_index,
@@ -1071,155 +1164,169 @@ impl Context {
             start_time: Instant::now(),
             _gpu_image_view: gpu_image_view,
             _texture_sampler: texture_sampler,
+            multisample_flag: scored_phys_dev.multisample_flag,
+            minimized: false,
         })
     }
-    pub fn resize(&mut self) {
-        if let Some(ref mut surface_derived) = self.surface_derived {
-            let surface = surface_derived.surface.clone();
-            //Must wait for the device to be idle before dropping any objects
-            //potentially referred to by frames in flight
-            self.device.wait_idle().unwrap();
+    pub fn resize(&mut self, new_size: PhysicalSize<u32>) {
+        if new_size.width != 0 && new_size.height != 0 {
+            if let Some(ref mut surface_derived) = self.surface_derived {
+                let surface = surface_derived.surface.clone();
+                //Must wait for the device to be idle before dropping any objects
+                //potentially referred to by frames in flight
+                self.device.wait_idle().unwrap();
 
-            *surface_derived = SurfaceDerived::new(
-                &self.device,
-                surface,
-                self.graphics_queue_index,
-                self.present_queue_index,
-                &[&self.vert_shader_mod, &self.frag_shader_mod],
-                &self.pipeline_layout,
-                Some(&surface_derived.swapchain),
-            )
-            .unwrap();
+                *surface_derived = SurfaceDerived::new(
+                    &self.device,
+                    surface,
+                    self.graphics_queue_index,
+                    self.present_queue_index,
+                    &[&self.vert_shader_mod, &self.frag_shader_mod],
+                    &self.pipeline_layout,
+                    self.multisample_flag,
+                    Some(&surface_derived.swapchain),
+                )
+                .unwrap();
+                self.minimized = false;
+            }
+        } else {
+            self.minimized = true;
         }
     }
     pub fn draw(&mut self) {
-        match &mut self.surface_derived {
-            Some(sd) => {
-                let sync_index = self.sync_index;
-                self.sync_index =
-                    (self.sync_index + 1) % MAX_FRAMES_IN_FLIGHT as usize;
-                let guard_fence =
-                    &mut self.prev_frame_finished_fences[sync_index];
-                guard_fence.wait_and_reset().unwrap();
-                let image_available_semaphore =
-                    &mut self.image_available_semaphores[sync_index];
-                let render_complete_semaphore =
-                    &mut self.render_complete_semaphores[sync_index];
-                let vertex_buffer = &mut self.vertex_buffers[sync_index];
-                let index_buffer = &mut self.index_buffers[sync_index];
-                let uniform_buffer = &mut self.uniform_buffers[sync_index];
-                let uniform_descriptor_set =
-                    &mut self.uniform_descriptor_sets[sync_index];
-                let cb = &mut self.command_buffers[sync_index];
-                //SAFETY: Semaphore derives from same device as swapchain
-                let fb_index = unsafe {
-                    sd.swapchain.acquire_next_image(
-                        Some(image_available_semaphore),
-                        None,
+        if !self.minimized {
+            match &mut self.surface_derived {
+                Some(sd) => {
+                    let sync_index = self.sync_index;
+                    self.sync_index =
+                        (self.sync_index + 1) % MAX_FRAMES_IN_FLIGHT as usize;
+                    let guard_fence =
+                        &mut self.prev_frame_finished_fences[sync_index];
+                    guard_fence.wait_and_reset().unwrap();
+                    let image_available_semaphore =
+                        &mut self.image_available_semaphores[sync_index];
+                    let render_complete_semaphore =
+                        &mut self.render_complete_semaphores[sync_index];
+                    let vertex_buffer = &mut self.vertex_buffers[sync_index];
+                    let index_buffer = &mut self.index_buffers[sync_index];
+                    let uniform_buffer = &mut self.uniform_buffers[sync_index];
+                    let uniform_descriptor_set =
+                        &mut self.uniform_descriptor_sets[sync_index];
+                    let cb = &mut self.command_buffers[sync_index];
+                    //SAFETY: Semaphore derives from same device as swapchain
+                    let fb_index = unsafe {
+                        sd.swapchain.acquire_next_image(
+                            Some(image_available_semaphore),
+                            None,
+                        )
+                    }
+                    .unwrap()
+                    .0;
+                    let fb = &mut sd.swapchain_framebuffers[fb_index as usize];
+                    let model = Mat4::rotation_z(
+                        90f32.to_radians()
+                            * self.start_time.elapsed().as_secs_f32(),
+                    );
+                    let view: Mat4<f32> = Mat4::look_at_rh(
+                        Vec3::new(0., -1., 2.),
+                        Vec3::broadcast(0.),
+                        Vec3::unit_z(),
+                    );
+                    let mut proj: Mat4<f32> = Mat4::infinite_perspective_rh(
+                        45f32.to_radians(),
+                        sd.swapchain.get_aspect_ratio(),
+                        0.01,
+                    );
+
+                    //Need to invert the projection matrix in order to flip the y
+                    //axis properly without influencing other coords. Also turns it
+                    //into a right hand coordinate space which is what I want.
+                    //Thanks vulkan.
+                    proj[(1, 1)] *= -1f32;
+
+                    vertex_buffer.upload_data(VERTICES);
+                    index_buffer.upload_data(INDICES);
+                    uniform_buffer.upload_data(&[Uniform {
+                        model,
+                        view,
+                        proj,
+                    }]);
+
+                    cb.record_and_submit(
+                        self.graphics_queue_index,
+                        0,
+                        &[image_available_semaphore.get_inner()],
+                        &[PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT],
+                        &[render_complete_semaphore.get_inner()],
+                        &CommandBufferBeginInfo::default()
+                            .flags(CommandBufferUsageFlags::ONE_TIME_SUBMIT),
+                        guard_fence.get_inner(),
+                        |dev, cb| -> Result<(), ash::vk::Result> {
+                            //SAFETY: We know dev and cb are linked. All other vars
+                            //used are derived from device
+                            unsafe {
+                                dev.cmd_bind_descriptor_sets(
+                                    cb,
+                                    PipelineBindPoint::GRAPHICS,
+                                    self.pipeline_layout.get_inner(),
+                                    0,
+                                    &[uniform_descriptor_set.get_inner()],
+                                    &[],
+                                );
+                                dev.cmd_bind_index_buffer(
+                                    cb,
+                                    index_buffer.get_inner(),
+                                    0,
+                                    IndexType::UINT16,
+                                );
+                                dev.cmd_bind_vertex_buffers(
+                                    cb,
+                                    0,
+                                    &[vertex_buffer.get_inner()],
+                                    &[0],
+                                );
+
+                                dev.cmd_begin_render_pass(
+                                    cb,
+                                    &RenderPassBeginInfo::default()
+                                        .clear_values(&[ClearValue {
+                                            color: ClearColorValue {
+                                                float32: [0.0, 0.0, 0.0, 1.0],
+                                            },
+                                        }])
+                                        .render_area(sd.swapchain.as_rect())
+                                        .render_pass(sd.render_pass.get_inner())
+                                        .framebuffer(fb.get_inner()),
+                                    SubpassContents::INLINE,
+                                );
+                                dev.cmd_bind_pipeline(
+                                    cb,
+                                    PipelineBindPoint::GRAPHICS,
+                                    sd.pipeline.get_inner(),
+                                );
+                                dev.cmd_draw_indexed(
+                                    cb,
+                                    INDICES.len() as u32,
+                                    1,
+                                    0,
+                                    0,
+                                    0,
+                                );
+                                dev.cmd_end_render_pass(cb);
+                                Ok(())
+                            }
+                        },
                     )
+                    .unwrap();
+
+                    fb.present(
+                        self.present_queue_index,
+                        &[render_complete_semaphore.get_inner()],
+                    )
+                    .unwrap();
                 }
-                .unwrap()
-                .0;
-                let fb = &mut sd.swapchain_framebuffers[fb_index as usize];
-                let model = Mat4::rotation_z(
-                    90f32.to_radians()
-                        * self.start_time.elapsed().as_secs_f32(),
-                );
-                let view: Mat4<f32> = Mat4::look_at_rh(
-                    Vec3::new(0., -1., 2.),
-                    Vec3::broadcast(0.),
-                    Vec3::unit_z(),
-                );
-                let mut proj: Mat4<f32> = Mat4::infinite_perspective_rh(
-                    45f32.to_radians(),
-                    sd.swapchain.get_aspect_ratio(),
-                    0.01,
-                );
-
-                //Need to invert the projection matrix in order to flip the y
-                //axis properly without influencing other coords. Also turns it
-                //into a right hand coordinate space which is what I want.
-                //Thanks vulkan.
-                proj[(1, 1)] *= -1f32;
-
-                vertex_buffer.upload_data(VERTICES);
-                index_buffer.upload_data(INDICES);
-                uniform_buffer.upload_data(&[Uniform { model, view, proj }]);
-
-                cb.record_and_submit(
-                    self.graphics_queue_index,
-                    0,
-                    &[image_available_semaphore.get_inner()],
-                    &[PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT],
-                    &[render_complete_semaphore.get_inner()],
-                    &CommandBufferBeginInfo::default()
-                        .flags(CommandBufferUsageFlags::ONE_TIME_SUBMIT),
-                    guard_fence.get_inner(),
-                    |dev, cb| -> Result<(), ash::vk::Result> {
-                        //SAFETY: We know dev and cb are linked. All other vars
-                        //used are derived from device
-                        unsafe {
-                            dev.cmd_bind_descriptor_sets(
-                                cb,
-                                PipelineBindPoint::GRAPHICS,
-                                self.pipeline_layout.get_inner(),
-                                0,
-                                &[uniform_descriptor_set.get_inner()],
-                                &[],
-                            );
-                            dev.cmd_bind_index_buffer(
-                                cb,
-                                index_buffer.get_inner(),
-                                0,
-                                IndexType::UINT16,
-                            );
-                            dev.cmd_bind_vertex_buffers(
-                                cb,
-                                0,
-                                &[vertex_buffer.get_inner()],
-                                &[0],
-                            );
-
-                            dev.cmd_begin_render_pass(
-                                cb,
-                                &RenderPassBeginInfo::default()
-                                    .clear_values(&[ClearValue {
-                                        color: ClearColorValue {
-                                            float32: [0.0, 0.0, 0.0, 1.0],
-                                        },
-                                    }])
-                                    .render_area(sd.swapchain.as_rect())
-                                    .render_pass(sd.render_pass.get_inner())
-                                    .framebuffer(fb.get_inner()),
-                                SubpassContents::INLINE,
-                            );
-                            dev.cmd_bind_pipeline(
-                                cb,
-                                PipelineBindPoint::GRAPHICS,
-                                sd.pipeline.get_inner(),
-                            );
-                            dev.cmd_draw_indexed(
-                                cb,
-                                INDICES.len() as u32,
-                                1,
-                                0,
-                                0,
-                                0,
-                            );
-                            dev.cmd_end_render_pass(cb);
-                            Ok(())
-                        }
-                    },
-                )
-                .unwrap();
-
-                fb.present(
-                    self.present_queue_index,
-                    &[render_complete_semaphore.get_inner()],
-                )
-                .unwrap();
+                None => {}
             }
-            None => {}
         }
     }
 
@@ -1234,6 +1341,7 @@ struct ScoredPhysDev {
     graphics_queue_index: u32,
     present_queue_index: u32,
     transfer_queue_index: u32,
+    multisample_flag: SampleCountFlags,
 }
 impl PartialEq for ScoredPhysDev {
     fn eq(&self, other: &Self) -> bool {
@@ -1332,6 +1440,22 @@ unsafe fn evaluate_physical_device(
         })
         .map(|(i, _props)| i as u32)
         .or(graphics_queue_index);
+    let shared_max_sample_count = {
+        let counts = properties.props.limits.framebuffer_color_sample_counts
+            & properties.props.limits.framebuffer_depth_sample_counts;
+        [
+            vk::SampleCountFlags::TYPE_64,
+            vk::SampleCountFlags::TYPE_32,
+            vk::SampleCountFlags::TYPE_16,
+            vk::SampleCountFlags::TYPE_8,
+            vk::SampleCountFlags::TYPE_4,
+            vk::SampleCountFlags::TYPE_2,
+        ]
+        .iter()
+        .cloned()
+        .find(|c| counts.contains(*c))
+        .unwrap_or(vk::SampleCountFlags::TYPE_1)
+    };
     if properties.extensions.iter().any(|ext| {
         ash::khr::swapchain::NAME.eq(ext.extension_name_as_c_str().expect(
             "It'd be weird if we got an extension that wasn't a valid cstr",
@@ -1348,7 +1472,8 @@ unsafe fn evaluate_physical_device(
     } {
         graphics_queue_index.and_then(|graphics_queue_index| {
             present_queue_index.map(|present_queue_index| {
-                //Weight CPUs more highly based on what type they are. If unknown,
+                let transfer_queue_index = transfer_queue_index.unwrap();
+                //Weight GPUs more highly based on what type they are. If unknown,
                 //just return some weird low value but better than CPU
                 let device_type_score = match properties.props.device_type {
                     PhysicalDeviceType::DISCRETE_GPU => 1000,
@@ -1357,25 +1482,53 @@ unsafe fn evaluate_physical_device(
                     _ => 100,
                 };
                 //If multiple of same category, pick the one with a shared graphics and presentation queue
-                let queue_score = if graphics_queue_index == present_queue_index
-                {
-                    100
-                } else {
-                    50
-                };
+                let shared_pres_graph_queue_score =
+                    if graphics_queue_index == present_queue_index {
+                        100
+                    } else {
+                        0
+                    };
+                let shared_transfer_queue_score =
+                    if transfer_queue_index == graphics_queue_index {
+                        0
+                    } else if transfer_queue_index == present_queue_index {
+                        50
+                    } else {
+                        100
+                    };
+
+                let multisample_score = map_multisample_flag_to_sample_count(
+                    shared_max_sample_count,
+                );
+
+                let queue_score = shared_pres_graph_queue_score
+                    + shared_transfer_queue_score
+                    + multisample_score;
                 ScoredPhysDev {
                     score: queue_score + device_type_score,
                     phys_dev,
                     graphics_queue_index,
                     present_queue_index,
-                    //Can unwrap because this is guaranteed to be Some if
-                    //graphics_queue_index is some
-                    transfer_queue_index: transfer_queue_index.unwrap(),
+                    transfer_queue_index,
+                    multisample_flag: shared_max_sample_count,
                 }
             })
         })
     } else {
         None
+    }
+}
+
+fn map_multisample_flag_to_sample_count(flag: SampleCountFlags) -> u64 {
+    match flag {
+        SampleCountFlags::TYPE_1=>1,
+        SampleCountFlags::TYPE_2=>2,
+        SampleCountFlags::TYPE_4 => 4,
+        SampleCountFlags::TYPE_8 => 8,
+        SampleCountFlags::TYPE_16=> 16,
+        SampleCountFlags::TYPE_32=> 32,
+        SampleCountFlags::TYPE_64=> 64,
+        _ => panic!("You need to ensure you're passing *singular* flags to this function"),
     }
 }
 
@@ -1734,7 +1887,7 @@ impl GpuImage {
                             .base_array_layer(0)
                             .base_mip_level(0)
                             .layer_count(1)
-                            .level_count(mip_levels);
+                            .level_count((mip_levels - 1).max(1));
 
                     let final_image_barrier = ImageMemoryBarrier::default()
                         .src_access_mask(AccessFlags::TRANSFER_READ)
@@ -1746,13 +1899,13 @@ impl GpuImage {
                         .subresource_range(whole_image_but_last_level_range)
                         .image(gpu_image.inner);
                     image_barriers.clear();
-                    image_barriers.push(final_image_barrier);
                     if let Some(b) = prev_level_preblit_barrier {
                         image_barriers.push(
                             b.new_layout(ImageLayout::SHADER_READ_ONLY_OPTIMAL)
                                 .dst_access_mask(AccessFlags::SHADER_READ),
                         )
                     }
+                    image_barriers.push(final_image_barrier);
 
                     unsafe {
                         dev.cmd_pipeline_barrier(
@@ -1772,7 +1925,9 @@ impl GpuImage {
         struct Return {
             _staging_buffer: ManagedMappableBuffer<u8>,
             _cb: CommandBuffer,
+            _sem: Semaphore,
             fence: Fence,
+            _cb2: CommandBuffer,
         }
 
         impl FenceProducer for Return {
@@ -1787,6 +1942,8 @@ impl GpuImage {
             Return {
                 _staging_buffer: staging_buffer,
                 _cb: image_transfer_command_buffer,
+                _cb2: mipmap_generate_command_buffer,
+                _sem: transfer_complete_semaphore,
                 fence: texture_ready_fence,
             },
         ))
@@ -1849,14 +2006,14 @@ impl Drop for GpuImageView {
 impl GpuImageView {
     unsafe fn new(
         parent_image: &Arc<GpuImage>,
-        ci: ImageViewCreateInfo,
+        ci: &ImageViewCreateInfo,
         debug_name: Option<String>,
     ) -> VkResult<Self> {
         let inner = unsafe {
             parent_image
                 .parent
                 .as_inner_ref()
-                .create_image_view(&ci, None)
+                .create_image_view(ci, None)
         }?;
 
         associate_debug_name!(parent_image.parent, inner, debug_name);

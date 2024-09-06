@@ -63,7 +63,10 @@ impl ApplicationHandler for App {
                     WindowEvent::RedrawRequested => {
                         graphics_context.draw();
                     }
-                    WindowEvent::Resized(_) => graphics_context.resize(),
+                    WindowEvent::Resized(intended_size) => {
+                        graphics_context.resize(intended_size)
+                    }
+
                     _ => {}
                 }
             }
