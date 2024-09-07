@@ -5,6 +5,10 @@ edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[build-dependencies]
+copy_to_output = "2.2.0"
+glob = "0.3.1"
+
 [dependencies]
 ash = "0.38"
 ash-window = "0.13"

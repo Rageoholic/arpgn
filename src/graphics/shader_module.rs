@@ -55,7 +55,7 @@ impl Drop for ShaderModule {
 }
 
 impl ShaderModule {
-    pub fn new(
+    pub fn from_source(
         device: &Arc<Device>,
         shader_compiler: &shaderc::Compiler,
         shader_path: &Path,
@@ -98,6 +98,32 @@ impl ShaderModule {
         }?;
 
         associate_debug_name!(device, inner, debug_name);
+        Ok(Self {
+            inner,
+            parent: device.clone(),
+            ty,
+            name: CString::new(entry).unwrap(),
+        })
+    }
+
+    pub fn from_spirv(
+        device: &Arc<Device>,
+        shader_path: &Path,
+        ty: ShaderStageFlags,
+        entry: &str,
+
+        debug_name: Option<String>,
+    ) -> Result<Self, Error> {
+        let spirv =
+            std::fs::read(shader_path).map_err(|e| Error::FileLoad(shader_path.into(), e))?;
+
+        let inner = {
+            let ci = ShaderModuleCreateInfo::default().code(bytemuck::cast_slice(&spirv));
+            unsafe { device.as_inner_ref().create_shader_module(&ci, None) }
+                .map_err(|_| Error::MemoryExhaustion)?
+        };
+        associate_debug_name!(device, inner, debug_name);
+
         Ok(Self {
             inner,
             parent: device.clone(),

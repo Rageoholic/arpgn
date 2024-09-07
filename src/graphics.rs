@@ -5,7 +5,7 @@ use std::{
     marker::PhantomData,
     mem::{offset_of, size_of, size_of_val},
     ops::{Deref, MulAssign},
-    path::Path,
+    path::{Path, PathBuf},
     rc::Rc,
     sync::Arc,
     time::Instant,
@@ -228,7 +228,8 @@ pub struct Context {
 pub struct ContextCreateOpts {
     pub graphics_validation_layers: ValidationLevel,
     pub dimensions: Option<Size>,
-    pub shared_transfer_graphics_queue: bool,
+    pub unified_transfer_graphics_queue: bool,
+    pub debuggable_shaders: bool,
 }
 
 #[derive(Debug, StructOpt, Default, PartialEq, Eq, EnumString, Clone, Copy)]
@@ -278,11 +279,14 @@ impl SurfaceDerived {
             }
             .map_err(|_| SwapchainCreation)?,
         );
-        let candidate_depth_formats = [
-            Format::D32_SFLOAT,
-            Format::D24_UNORM_S8_UINT,
-            Format::D32_SFLOAT_S8_UINT,
-        ];
+        log::info!("Swapchain Format: {:?}", swapchain.get_format());
+        log::info!(
+            "Swapchain Dimensions: {} {} {}",
+            swapchain.default_viewport().width,
+            swapchain.default_viewport().height,
+            swapchain.get_aspect_ratio()
+        );
+        let candidate_depth_formats = [Format::D32_SFLOAT, Format::D32_SFLOAT_S8_UINT];
 
         let depth_format = candidate_depth_formats
             .iter()
@@ -294,6 +298,7 @@ impl SurfaceDerived {
                     .contains(FormatFeatureFlags::DEPTH_STENCIL_ATTACHMENT)
             })
             .ok_or(RenderSetupError::NoSupportedDepthFormat)?;
+        log::info!("Depth Format: {:?}", depth_format);
         let viewports = [swapchain.default_viewport()];
         let scissors = [swapchain.as_rect()];
         let color_attachment = AttachmentDescription::default()
@@ -531,7 +536,9 @@ impl SurfaceDerived {
             .depth_test_enable(true)
             .depth_write_enable(true)
             .depth_compare_op(CompareOp::LESS)
-            .stencil_test_enable(false);
+            .stencil_test_enable(false)
+            .min_depth_bounds(0.0)
+            .max_depth_bounds(1.0);
 
         let pipeline_ci = GraphicsPipelineCreateInfo::default()
             .stages(&shader_stages)
@@ -668,7 +675,7 @@ impl Context {
             api_version_patch(vk_version)
         );
         let app_info = ApplicationInfo::default()
-            .api_version(vk_version)
+            .api_version(ash::vk::API_VERSION_1_0)
             .application_name(c"arpgn");
         let avail_extensions =
         //SAFETY: Should always be good
@@ -690,10 +697,6 @@ impl Context {
                 //computer
                 .map(|bytes| unsafe { CStr::from_ptr(*bytes) }),
         );
-
-        if vk_version < ash::vk::API_VERSION_1_3 {
-            return Err(InstanceCreation);
-        }
 
         let mut missing_mandatory_extensions = Vec::with_capacity(mandatory_extensions.len());
 
@@ -735,7 +738,24 @@ impl Context {
         } else {
             opts.graphics_validation_layers = ValidationLevel::None;
         }
-
+        if opts.debuggable_shaders
+            && avail_extensions
+                .iter()
+                .find_map(|instance_ext| {
+                    if ash::khr::shader_non_semantic_info::NAME
+                        .eq(instance_ext.extension_name_as_c_str().unwrap())
+                    {
+                        Some(())
+                    } else {
+                        None
+                    }
+                })
+                .is_some()
+        {
+            instance_exts.push(ash::khr::shader_non_semantic_info::NAME.as_ptr());
+        } else {
+            opts.debuggable_shaders = false;
+        }
         let mut layer_names = Vec::with_capacity(1);
         if opts.graphics_validation_layers != ValidationLevel::None {
             layer_names.push(KHRONOS_VALIDATION_LAYER_NAME.as_ptr());
@@ -799,7 +819,7 @@ impl Context {
                         &instance,
                         *current_dev,
                         &surface,
-                        opts.shared_transfer_graphics_queue,
+                        opts.unified_transfer_graphics_queue,
                     )
                 };
                 if score > best_found {
@@ -813,9 +833,9 @@ impl Context {
         let present_queue_index = scored_phys_dev.present_queue_index;
         let transfer_queue_index = scored_phys_dev.transfer_queue_index;
         let multisample_flag = scored_phys_dev.multisample_flag;
-        log::warn!("Graphics queue index: {}", graphics_queue_index);
-        log::warn!("Transfer queue index: {}", transfer_queue_index);
-        log::warn!("Present queue index: {}", present_queue_index);
+        log::info!("Graphics Queue Index: {}", graphics_queue_index);
+        log::info!("Transfer Queue Index: {}", transfer_queue_index);
+        log::info!("Present Queue Index: {}", present_queue_index);
         //TODO: Properly check for these extensions
         let device_extension_names = vec![ash::khr::swapchain::NAME.as_ptr()];
         let mut queue_family_indices = HashSet::with_capacity(3);
@@ -856,27 +876,56 @@ impl Context {
         let shader_compiler = shaderc::Compiler::new().ok_or(ShaderCompilerCreation)?;
 
         let vert_shader_path = Path::new("shaders/shader.vert");
-
-        let vert_shader_mod = ShaderModule::new(
-            &device,
-            &shader_compiler,
-            vert_shader_path,
-            ShaderStageFlags::VERTEX,
-            "main",
-            None,
-            debug_string!(device.is_debug(), "Vertex Shader Module"),
-        );
         let frag_shader_path = Path::new("shaders/shader.frag");
-        let frag_shader_mod = ShaderModule::new(
-            &device,
-            &shader_compiler,
-            frag_shader_path,
-            ShaderStageFlags::FRAGMENT,
-            "main",
-            None,
-            debug_string!(device.is_debug(), "Fragment Shader Module"),
-        );
 
+        let (vert_shader_mod, frag_shader_mod) = if !opts.debuggable_shaders {
+            let vert_shader_mod = ShaderModule::from_source(
+                &device,
+                &shader_compiler,
+                vert_shader_path,
+                ShaderStageFlags::VERTEX,
+                "main",
+                None,
+                debug_string!(device.is_debug(), "Vertex Shader Module"),
+            );
+
+            let frag_shader_mod = ShaderModule::from_source(
+                &device,
+                &shader_compiler,
+                frag_shader_path,
+                ShaderStageFlags::FRAGMENT,
+                "main",
+                None,
+                debug_string!(device.is_debug(), "Fragment Shader Module"),
+            );
+            (vert_shader_mod, frag_shader_mod)
+        } else {
+            let vert_shader_path = PathBuf::from(format!(
+                "{}.with_debug_info.spv",
+                vert_shader_path.to_str().unwrap()
+            ));
+            let vert_shader = ShaderModule::from_spirv(
+                &device,
+                &vert_shader_path,
+                ShaderStageFlags::VERTEX,
+                "main",
+                debug_string!(device.is_debug(), "Vertex Shader Module"),
+            );
+
+            let frag_shader_path = PathBuf::from(format!(
+                "{}.with_debug_info.spv",
+                frag_shader_path.to_str().unwrap()
+            ));
+            let frag_shader = ShaderModule::from_spirv(
+                &device,
+                &frag_shader_path,
+                ShaderStageFlags::FRAGMENT,
+                "main",
+                debug_string!(device.is_debug(), "Fragment Shader Module"),
+            );
+
+            (vert_shader, frag_shader)
+        };
         let (vert_shader_mod, frag_shader_mod) = match (vert_shader_mod, frag_shader_mod) {
             (Ok(mod1), Ok(mod2)) => Ok((mod1, mod2)),
             (Err(e), Ok(_)) | (Ok(_), Err(e)) => Err(ShaderModuleCreationErrors(vec![e])),
@@ -1294,11 +1343,12 @@ impl Context {
                         Vec3::unit_z(),
                     );
                     let vulkan_correction_matrix = Mat4::from_diagonal(Vec4::new(1., -1., 1., 1.));
+
                     let proj: Mat4<f32> = Mat4::perspective_rh_zo(
                         45f32.to_radians(),
                         sd.swapchain.get_aspect_ratio(),
                         0.01,
-                        10.0,
+                        1000000.0,
                     ) * vulkan_correction_matrix;
 
                     vertex_buffer.upload_data(VERTICES);
