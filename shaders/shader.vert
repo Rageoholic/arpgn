@@ -8,11 +8,15 @@ layout(location = 0) out vec3 fragColor;
 layout(location = 1) out vec2 texCoord;
 
 layout(binding = 0) uniform UniformBufferObject {
-    mat4 model; mat4 view; mat4 proj;
+    mat4 view; mat4 proj;
 } uniforms;
+
+layout (push_constant) uniform PushConstants {
+    mat4 model;
+} pcs;
 
 void main() {
     fragColor = inColor;
     texCoord = inCoord;
-    gl_Position =uniforms.proj*uniforms.view*uniforms.model * vec4(inPosition, 1) * vec4(1,1,1,1);
+    gl_Position = uniforms.proj * uniforms.view * pcs.model * vec4(inPosition, 1);
 }

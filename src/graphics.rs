@@ -16,7 +16,7 @@ use ash::{
     vk::{
         self, api_version_major, api_version_minor, api_version_patch, AccessFlags,
         ApplicationInfo, AttachmentDescription, AttachmentLoadOp, AttachmentReference,
-        AttachmentStoreOp, BlendFactor, BorderColor, BufferCreateInfo, BufferImageCopy,
+        AttachmentStoreOp, BlendFactor, BlendOp, BorderColor, BufferCreateInfo, BufferImageCopy,
         BufferUsageFlags, ClearColorValue, ClearDepthStencilValue, ClearValue, ColorComponentFlags,
         CommandBufferBeginInfo, CommandBufferLevel, CommandBufferUsageFlags,
         CommandPoolCreateFlags, CommandPoolCreateInfo, CompareOp, CullModeFlags,
@@ -35,11 +35,11 @@ use ash::{
         PipelineLayoutCreateInfo, PipelineMultisampleStateCreateInfo,
         PipelineRasterizationStateCreateInfo, PipelineShaderStageCreateInfo, PipelineStageFlags,
         PipelineVertexInputStateCreateInfo, PipelineViewportStateCreateInfo, PolygonMode,
-        PrimitiveTopology, QueueFlags, RenderPassBeginInfo, RenderPassCreateInfo, SampleCountFlags,
-        Sampler, SamplerAddressMode, SamplerCreateInfo, SamplerMipmapMode, ShaderStageFlags,
-        SharingMode, SubpassContents, SubpassDescription, VertexInputAttributeDescription,
-        VertexInputBindingDescription, VertexInputRate, WriteDescriptorSet, API_VERSION_1_0,
-        QUEUE_FAMILY_IGNORED,
+        PrimitiveTopology, PushConstantRange, QueueFlags, RenderPassBeginInfo,
+        RenderPassCreateInfo, SampleCountFlags, Sampler, SamplerAddressMode, SamplerCreateInfo,
+        SamplerMipmapMode, ShaderStageFlags, SharingMode, SubpassContents, SubpassDescription,
+        VertexInputAttributeDescription, VertexInputBindingDescription, VertexInputRate,
+        WriteDescriptorSet, API_VERSION_1_0, QUEUE_FAMILY_IGNORED,
     },
     LoadingError,
 };
@@ -141,8 +141,7 @@ const INDICES: &[u16] = &[0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7];
 
 #[repr(C)]
 #[derive(Debug, bytemuck::Pod, bytemuck::Zeroable, Clone, Copy)]
-struct Uniform {
-    model: Mat4<f32>,
+struct UniformBuffer {
     view: Mat4<f32>,
     proj: Mat4<f32>,
 }
@@ -205,7 +204,7 @@ pub struct Context {
     uniform_descriptor_sets: Vec<DescriptorSet>,
     vertex_buffers: Vec<ManagedMappableBuffer<Vertex>>,
     //TODO: Apparently this uniform buffer is captured by the descriptor set
-    uniform_buffers: Vec<ManagedMappableBuffer<Uniform>>,
+    uniform_buffers: Vec<ManagedMappableBuffer<UniformBuffer>>,
     index_buffers: Vec<ManagedMappableBuffer<u16>>,
     image_available_semaphores: Vec<Semaphore>,
     prev_frame_finished_fences: Vec<Fence>,
@@ -248,6 +247,7 @@ pub type PhantomUnsendUnsync = PhantomData<*const ()>;
 struct SurfaceDerived {
     surface: Arc<Surface>,
     swapchain: Arc<Swapchain>,
+
     pipeline: Pipeline,
     swapchain_framebuffers: Vec<swapchain::SwapchainFramebuffer>,
     render_pass: RenderPass,
@@ -279,8 +279,8 @@ impl SurfaceDerived {
             }
             .map_err(|_| SwapchainCreation)?,
         );
-        log::info!("Swapchain Format: {:?}", swapchain.get_format());
-        log::info!(
+        log::trace!("Swapchain Format: {:?}", swapchain.get_format());
+        log::trace!(
             "Swapchain Dimensions: {} {} {}",
             swapchain.default_viewport().width,
             swapchain.default_viewport().height,
@@ -298,7 +298,7 @@ impl SurfaceDerived {
                     .contains(FormatFeatureFlags::DEPTH_STENCIL_ATTACHMENT)
             })
             .ok_or(RenderSetupError::NoSupportedDepthFormat)?;
-        log::info!("Depth Format: {:?}", depth_format);
+        log::trace!("Depth Format: {:?}", depth_format);
         let viewports = [swapchain.default_viewport()];
         let scissors = [swapchain.as_rect()];
         let color_attachment = AttachmentDescription::default()
@@ -525,8 +525,14 @@ impl SurfaceDerived {
             PipelineMultisampleStateCreateInfo::default().rasterization_samples(multisample_flag);
 
         let attachments = [PipelineColorBlendAttachmentState::default()
-            .dst_color_blend_factor(BlendFactor::ONE)
-            .color_write_mask(ColorComponentFlags::RGBA)];
+            .blend_enable(true)
+            .dst_color_blend_factor(BlendFactor::ONE_MINUS_SRC_ALPHA)
+            .color_write_mask(ColorComponentFlags::RGBA)
+            .src_color_blend_factor(BlendFactor::SRC_ALPHA)
+            .src_alpha_blend_factor(BlendFactor::ONE)
+            .dst_alpha_blend_factor(BlendFactor::ZERO)
+            .color_blend_op(BlendOp::ADD)
+            .alpha_blend_op(BlendOp::ADD)];
         let color_blend_state = PipelineColorBlendStateCreateInfo::default()
             .attachments(&attachments)
             .logic_op_enable(false)
@@ -677,7 +683,7 @@ impl Context {
         let app_info = ApplicationInfo::default()
             .api_version(ash::vk::API_VERSION_1_0)
             .application_name(c"arpgn");
-        let avail_extensions =
+        let avail_device_extensions =
         //SAFETY: Should always be good
             unsafe { entry.enumerate_instance_extension_properties(None) }
                 .map_err(|e| {
@@ -702,7 +708,7 @@ impl Context {
 
         for ext in &mandatory_extensions {
             let mut found = false;
-            for instance_ext in &avail_extensions {
+            for instance_ext in &avail_device_extensions {
                 if (*ext).eq(instance_ext.extension_name_as_c_str().unwrap()) {
                     found = true;
                     break;
@@ -716,12 +722,12 @@ impl Context {
         if !missing_mandatory_extensions.is_empty() {
             return Err(MissingMandatoryExtensions(missing_mandatory_extensions));
         }
-        let mut instance_exts: Vec<_> = mandatory_extensions
+        let mut device_extension_names: Vec<_> = mandatory_extensions
             .iter()
             .map(|str| str.as_ptr())
             .collect();
         if opts.graphics_validation_layers != ValidationLevel::None
-            && avail_extensions
+            && avail_device_extensions
                 .iter()
                 .find_map(|instance_ext| {
                     if ash::ext::debug_utils::NAME
@@ -734,27 +740,9 @@ impl Context {
                 })
                 .is_some()
         {
-            instance_exts.push(ash::ext::debug_utils::NAME.as_ptr());
+            device_extension_names.push(ash::ext::debug_utils::NAME.as_ptr());
         } else {
             opts.graphics_validation_layers = ValidationLevel::None;
-        }
-        if opts.debuggable_shaders
-            && avail_extensions
-                .iter()
-                .find_map(|instance_ext| {
-                    if ash::khr::shader_non_semantic_info::NAME
-                        .eq(instance_ext.extension_name_as_c_str().unwrap())
-                    {
-                        Some(())
-                    } else {
-                        None
-                    }
-                })
-                .is_some()
-        {
-            instance_exts.push(ash::khr::shader_non_semantic_info::NAME.as_ptr());
-        } else {
-            opts.debuggable_shaders = false;
         }
         let mut layer_names = Vec::with_capacity(1);
         if opts.graphics_validation_layers != ValidationLevel::None {
@@ -763,7 +751,7 @@ impl Context {
 
         let mut instance_create_info = InstanceCreateInfo::default()
             .application_info(&app_info)
-            .enabled_extension_names(&instance_exts)
+            .enabled_extension_names(&device_extension_names)
             .enabled_layer_names(&layer_names);
 
         let all_debug_message_types = DebugUtilsMessageTypeFlagsEXT::DEVICE_ADDRESS_BINDING
@@ -829,27 +817,71 @@ impl Context {
                 }
             })
             .ok_or(NoSuitableDevice)?;
-        let graphics_queue_index = scored_phys_dev.graphics_queue_index;
-        let present_queue_index = scored_phys_dev.present_queue_index;
-        let transfer_queue_index = scored_phys_dev.transfer_queue_index;
+        let graphics_queue_family_index = scored_phys_dev.graphics_queue_index;
+        let present_queue_family_index = scored_phys_dev.present_queue_index;
+        let transfer_queue_family_index = scored_phys_dev.transfer_queue_index;
         let multisample_flag = scored_phys_dev.multisample_flag;
-        log::info!("Graphics Queue Index: {}", graphics_queue_index);
-        log::info!("Transfer Queue Index: {}", transfer_queue_index);
-        log::info!("Present Queue Index: {}", present_queue_index);
+        let mut device_extension_names = vec![ash::khr::swapchain::NAME.as_ptr()];
+        log::trace!("Graphics Queue Index: {}", graphics_queue_family_index);
+        log::trace!("Transfer Queue Index: {}", transfer_queue_family_index);
+        log::trace!("Present Queue Index: {}", present_queue_family_index);
         //TODO: Properly check for these extensions
-        let device_extension_names = vec![ash::khr::swapchain::NAME.as_ptr()];
+        let physical_device = scored_phys_dev.phys_dev;
+        let avail_device_extensions = unsafe {
+            instance
+                .as_inner_ref()
+                .enumerate_device_extension_properties(physical_device)
+        }
+        .unwrap();
+
+        for mandatory_ext in device_extension_names.iter() {
+            if !avail_device_extensions.iter().any(|dev_ext| {
+                unsafe { CStr::from_ptr(*mandatory_ext) }
+                    .eq(dev_ext.extension_name_as_c_str().unwrap())
+            }) {
+                missing_mandatory_extensions
+                    .push(unsafe { CStr::from_ptr(*mandatory_ext).to_string_lossy().into() });
+            }
+        }
+
+        if !missing_mandatory_extensions.is_empty() {
+            return Err(ContextCreationError::MissingMandatoryExtensions(
+                missing_mandatory_extensions,
+            ));
+        }
+
+        if opts.debuggable_shaders
+            && avail_device_extensions.iter().any(|device_ext| {
+                ash::khr::shader_non_semantic_info::NAME
+                    .eq(device_ext.extension_name_as_c_str().unwrap())
+            })
+        {
+            device_extension_names.push(ash::khr::shader_non_semantic_info::NAME.as_ptr());
+        } else if opts.debuggable_shaders {
+            opts.debuggable_shaders = false;
+            log::warn!("Unable to load debuggable shaders, missing extension");
+        }
         let mut queue_family_indices = HashSet::with_capacity(3);
-        queue_family_indices.insert(present_queue_index);
-        queue_family_indices.insert(graphics_queue_index);
-        queue_family_indices.insert(transfer_queue_index);
+        queue_family_indices.insert(present_queue_family_index);
+        queue_family_indices.insert(graphics_queue_family_index);
+        queue_family_indices.insert(transfer_queue_family_index);
+        let queue_priorities = &[1f32; 30];
         let queue_create_infos: Vec<_> = queue_family_indices
             .iter()
             .map(|qfi| {
+                let queue_family_info =
+                    unsafe { instance.get_relevant_physical_device_properties(physical_device) }
+                        .queue_families[*qfi as usize];
+                let queue_count = queue_priorities
+                    .len()
+                    .min(queue_family_info.queue_count as usize);
                 DeviceQueueCreateInfo::default()
                     .queue_family_index(*qfi)
-                    .queue_priorities(&[1.0])
+                    .queue_priorities(&queue_priorities[..queue_count])
             })
             .collect();
+
+        log::trace!("Queue Family Create Infos: {:?}", queue_create_infos);
         #[allow(deprecated)]
         let dev_ci = DeviceCreateInfo::default()
             .enabled_extension_names(&device_extension_names)
@@ -872,6 +904,8 @@ impl Context {
             }
             .map_err(|_| DeviceCreation)?,
         );
+
+        log::trace!("Device info: {:?}", device);
 
         let shader_compiler = shaderc::Compiler::new().ok_or(ShaderCompilerCreation)?;
 
@@ -997,8 +1031,16 @@ impl Context {
         }
         .unwrap();
 
-        let pipeline_layout_ci =
-            PipelineLayoutCreateInfo::default().set_layouts(descriptor_set_layouts);
+        let vert_push_constant_range = PushConstantRange::default()
+            .stage_flags(ShaderStageFlags::VERTEX)
+            .offset(0)
+            .size(size_of::<Mat4<f32>>() as u32);
+
+        let push_constant_ranges = &[vert_push_constant_range];
+
+        let pipeline_layout_ci = PipelineLayoutCreateInfo::default()
+            .set_layouts(descriptor_set_layouts)
+            .push_constant_ranges(push_constant_ranges);
 
         let pipeline_layout = unsafe {
             PipelineLayout::new(
@@ -1009,7 +1051,7 @@ impl Context {
         }
         .map_err(|e| UnknownVulkan("creating pipeline layout".into(), e))?;
         let graphics_command_pool_ci = CommandPoolCreateInfo::default()
-            .queue_family_index(graphics_queue_index)
+            .queue_family_index(graphics_queue_family_index)
             .flags(CommandPoolCreateFlags::RESET_COMMAND_BUFFER);
         let graphics_command_pool = Arc::new(
             unsafe {
@@ -1065,7 +1107,7 @@ impl Context {
         let uniform_buffer_ci = BufferCreateInfo::default()
             .sharing_mode(SharingMode::EXCLUSIVE)
             .usage(BufferUsageFlags::UNIFORM_BUFFER)
-            .size(size_of::<Uniform>() as u64);
+            .size(size_of::<UniformBuffer>() as u64);
 
         let uniform_buffer_ai = vk_mem::AllocationCreateInfo {
             flags: vk_mem::AllocationCreateFlags::MAPPED
@@ -1137,7 +1179,7 @@ impl Context {
         }
 
         let transfer_command_pool_ci = CommandPoolCreateInfo::default()
-            .queue_family_index(transfer_queue_index)
+            .queue_family_index(transfer_queue_family_index)
             .flags(CommandPoolCreateFlags::TRANSIENT);
         //SAFETY: valid cis
         let transfer_command_pool = Arc::new(
@@ -1155,8 +1197,8 @@ impl Context {
             &device,
             &transfer_command_pool,
             &graphics_command_pool,
-            transfer_queue_index,
-            graphics_queue_index,
+            transfer_queue_family_index,
+            graphics_queue_family_index,
         )
         .unwrap();
         let image_subresource_range = ImageSubresourceRange::default()
@@ -1210,7 +1252,7 @@ impl Context {
             let buffer_infos = &[DescriptorBufferInfo::default()
                 .buffer(uniform_buffers[i].get_inner())
                 .offset(0)
-                .range(size_of::<Uniform>() as u64)];
+                .range(size_of::<UniformBuffer>() as u64)];
             let image_infos = &[DescriptorImageInfo::default()
                 .image_layout(ImageLayout::SHADER_READ_ONLY_OPTIMAL)
                 .image_view(gpu_image_view.inner)
@@ -1257,15 +1299,15 @@ impl Context {
             surface_derived: Some(SurfaceDerived::new(
                 &device,
                 Arc::new(surface),
-                graphics_queue_index,
-                present_queue_index,
+                graphics_queue_family_index,
+                present_queue_family_index,
                 &[&vert_shader_mod, &frag_shader_mod],
                 &pipeline_layout,
                 multisample_flag,
                 None,
             )?),
-            graphics_queue_index,
-            present_queue_index,
+            graphics_queue_index: graphics_queue_family_index,
+            present_queue_index: present_queue_family_index,
             vertex_buffers,
             uniform_buffers,
             index_buffers,
@@ -1353,7 +1395,7 @@ impl Context {
 
                     vertex_buffer.upload_data(VERTICES);
                     index_buffer.upload_data(INDICES);
-                    uniform_buffer.upload_data(&[Uniform { model, view, proj }]);
+                    uniform_buffer.upload_data(&[UniformBuffer { view, proj }]);
 
                     cb.record_and_submit(
                         self.graphics_queue_index,
@@ -1381,6 +1423,14 @@ impl Context {
 
                                     debug_device.cmd_begin_debug_utils_label(cb, &debug_label);
                                 }
+                                dev.cmd_push_constants(
+                                    cb,
+                                    self.pipeline_layout.get_inner(),
+                                    ShaderStageFlags::VERTEX,
+                                    0,
+                                    bytemuck::cast_slice(&[model]),
+                                );
+
                                 dev.cmd_bind_descriptor_sets(
                                     cb,
                                     PipelineBindPoint::GRAPHICS,
