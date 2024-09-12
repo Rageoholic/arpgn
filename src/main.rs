@@ -1,8 +1,8 @@
 #![warn(unsafe_op_in_unsafe_fn)]
 #![allow(clippy::redundant_closure)]
 
+use clap::Parser;
 use graphics::Context;
-use structopt::StructOpt;
 
 use winit::{
     application::ApplicationHandler,
@@ -13,13 +13,13 @@ use winit::{
 mod graphics;
 mod utils;
 
-#[derive(Debug, StructOpt)]
+#[derive(Debug, Parser)]
 struct Opt {
-    #[structopt(long, default_value = "None")]
+    #[arg(long, default_value = "None")]
     graphics_validation_level: graphics::ValidationLevel,
-    #[structopt(long)]
+    #[arg(long)]
     unified_graphics_transfer_queue: bool,
-    #[structopt(long)]
+    #[arg(long)]
     debuggable_shaders: bool,
 }
 
@@ -86,7 +86,8 @@ impl ApplicationHandler for App {
 
 fn main() {
     pretty_env_logger::init();
-    let opts = Opt::from_args();
+    let opts = Opt::parse();
+    log::info!("Arguments from cmdline: {:?}", opts);
     let event_loop = EventLoop::builder().build().unwrap();
 
     let mut app = App::Uninitialized(opts);

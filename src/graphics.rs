@@ -44,6 +44,7 @@ use ash::{
     LoadingError,
 };
 use buffers::ManagedMappableBuffer;
+use clap::Parser;
 use command_buffers::{CommandBuffer, CommandPool};
 use descriptor_sets::{DescriptorPool, DescriptorSet, DescriptorSetLayout};
 use device::Device;
@@ -54,7 +55,6 @@ use pipeline::Pipeline;
 use pipeline_layout::PipelineLayout;
 use render_pass::RenderPass;
 use shader_module::ShaderModule;
-use structopt::StructOpt;
 use strum::EnumString;
 
 use surface::Surface;
@@ -231,7 +231,7 @@ pub struct ContextCreateOpts {
     pub debuggable_shaders: bool,
 }
 
-#[derive(Debug, StructOpt, Default, PartialEq, Eq, EnumString, Clone, Copy)]
+#[derive(Debug, Parser, Default, PartialEq, Eq, EnumString, Clone, Copy)]
 pub enum ValidationLevel {
     #[default]
     None,
