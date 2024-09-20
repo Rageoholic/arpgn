@@ -1,13 +1,18 @@
 use std::{marker::PhantomData, ptr::copy_nonoverlapping, sync::Arc};
 
-use ash::{prelude::VkResult, vk::BufferCreateInfo};
+use ash::{
+    prelude::VkResult,
+    vk::{BufferCreateInfo, BufferUsageFlags, MemoryPropertyFlags, SharingMode},
+};
 use bytemuck::{Pod, Zeroable};
-use vk_mem::{Alloc, AllocationCreateInfo as BufferAllocationCreateInfo};
+use vk_mem::{
+    Alloc, AllocationCreateFlags, AllocationCreateInfo as BufferAllocationCreateInfo, MemoryUsage,
+};
 
 use super::{utils::associate_debug_name, Device};
 
 #[derive(Debug)]
-pub struct ManagedMappableBuffer<T> {
+pub struct MappableBuffer<T: Pod + Zeroable> {
     parent: Arc<Device>,
     _phantom: PhantomData<[T]>,
     inner: ash::vk::Buffer,
@@ -15,9 +20,36 @@ pub struct ManagedMappableBuffer<T> {
     allocation_info: vk_mem::AllocationInfo,
 }
 
-impl<T: Pod + Zeroable> ManagedMappableBuffer<T> {
+impl<T: Pod + Zeroable> MappableBuffer<T> {
+    pub fn new(
+        device: &Arc<Device>,
+        size: u64,
+        usage: BufferUsageFlags,
+        memory_preference: MemoryUsage,
+        concurrent_queue_families: Option<&[u32]>,
+        debug_name: Option<String>,
+    ) -> VkResult<Self> {
+        let ci = BufferCreateInfo::default()
+            .sharing_mode(if concurrent_queue_families.is_some() {
+                SharingMode::CONCURRENT
+            } else {
+                SharingMode::EXCLUSIVE
+            })
+            .queue_family_indices(concurrent_queue_families.unwrap_or(&[]))
+            .usage(usage)
+            .size(size);
+        let ai = BufferAllocationCreateInfo {
+            flags: (AllocationCreateFlags::MAPPED
+                | AllocationCreateFlags::HOST_ACCESS_SEQUENTIAL_WRITE),
+            usage: memory_preference,
+            required_flags: MemoryPropertyFlags::HOST_VISIBLE,
+            ..Default::default()
+        };
+
+        unsafe { Self::from_raw_cis(device, &ci, &ai, debug_name) }
+    }
     //SAFETY: ai must have memory be host visible
-    pub unsafe fn new(
+    unsafe fn from_raw_cis(
         device: &Arc<Device>,
         ci: &BufferCreateInfo,
         ai: &BufferAllocationCreateInfo,
@@ -54,7 +86,7 @@ impl<T: Pod + Zeroable> ManagedMappableBuffer<T> {
     }
 }
 
-impl<T> Drop for ManagedMappableBuffer<T> {
+impl<T: Pod + Zeroable> Drop for MappableBuffer<T> {
     fn drop(&mut self) {
         //SAFETY: Tied together
         unsafe {

@@ -4,7 +4,7 @@ use std::{
     fmt::{Debug, Display},
     marker::PhantomData,
     mem::{offset_of, size_of, size_of_val},
-    ops::{Deref, MulAssign},
+    ops::MulAssign,
     path::{Path, PathBuf},
     rc::Rc,
     sync::Arc,
@@ -16,8 +16,8 @@ use ash::{
     vk::{
         self, api_version_major, api_version_minor, api_version_patch, AccessFlags,
         ApplicationInfo, AttachmentDescription, AttachmentLoadOp, AttachmentReference,
-        AttachmentStoreOp, BlendFactor, BlendOp, BorderColor, BufferCreateInfo, BufferImageCopy,
-        BufferUsageFlags, ClearColorValue, ClearDepthStencilValue, ClearValue, ColorComponentFlags,
+        AttachmentStoreOp, BlendFactor, BlendOp, BorderColor, BufferImageCopy, BufferUsageFlags,
+        ClearColorValue, ClearDepthStencilValue, ClearValue, ColorComponentFlags,
         CommandBufferBeginInfo, CommandBufferLevel, CommandBufferUsageFlags,
         CommandPoolCreateFlags, CommandPoolCreateInfo, CompareOp, CullModeFlags,
         DebugUtilsLabelEXT, DebugUtilsMessageSeverityFlagsEXT, DebugUtilsMessageTypeFlagsEXT,
@@ -28,27 +28,29 @@ use ash::{
         FormatFeatureFlags, FrontFace, GraphicsPipelineCreateInfo, ImageAspectFlags, ImageBlit,
         ImageCreateInfo, ImageLayout, ImageMemoryBarrier, ImageSubresourceLayers,
         ImageSubresourceRange, ImageTiling, ImageType, ImageUsageFlags, ImageView,
-        ImageViewCreateInfo, ImageViewType, IndexType, InstanceCreateInfo, LogicOp,
-        MemoryPropertyFlags, Offset3D, PhysicalDevice, PhysicalDeviceType, PipelineBindPoint,
-        PipelineColorBlendAttachmentState, PipelineColorBlendStateCreateInfo,
-        PipelineDepthStencilStateCreateInfo, PipelineInputAssemblyStateCreateInfo,
-        PipelineLayoutCreateInfo, PipelineMultisampleStateCreateInfo,
-        PipelineRasterizationStateCreateInfo, PipelineShaderStageCreateInfo, PipelineStageFlags,
-        PipelineVertexInputStateCreateInfo, PipelineViewportStateCreateInfo, PolygonMode,
-        PrimitiveTopology, PushConstantRange, QueueFlags, RenderPassBeginInfo,
-        RenderPassCreateInfo, SampleCountFlags, Sampler, SamplerAddressMode, SamplerCreateInfo,
-        SamplerMipmapMode, ShaderStageFlags, SharingMode, SubpassContents, SubpassDescription,
-        VertexInputAttributeDescription, VertexInputBindingDescription, VertexInputRate,
-        WriteDescriptorSet, API_VERSION_1_0, QUEUE_FAMILY_IGNORED,
+        ImageViewCreateInfo, ImageViewType, IndexType, InstanceCreateInfo, LogicOp, Offset3D,
+        PhysicalDevice, PhysicalDeviceType, PipelineBindPoint, PipelineColorBlendAttachmentState,
+        PipelineColorBlendStateCreateInfo, PipelineDepthStencilStateCreateInfo,
+        PipelineInputAssemblyStateCreateInfo, PipelineLayoutCreateInfo,
+        PipelineMultisampleStateCreateInfo, PipelineRasterizationStateCreateInfo,
+        PipelineShaderStageCreateInfo, PipelineStageFlags, PipelineVertexInputStateCreateInfo,
+        PipelineViewportStateCreateInfo, PolygonMode, PrimitiveTopology, PushConstantRange,
+        QueueFlags, RenderPassBeginInfo, RenderPassCreateInfo, SampleCountFlags, Sampler,
+        SamplerAddressMode, SamplerCreateInfo, SamplerMipmapMode, ShaderStageFlags, SharingMode,
+        SubpassContents, SubpassDescription, VertexInputAttributeDescription,
+        VertexInputBindingDescription, VertexInputRate, WriteDescriptorSet, API_VERSION_1_0,
+        QUEUE_FAMILY_IGNORED,
     },
     LoadingError,
 };
-use buffers::ManagedMappableBuffer;
+use buffers::MappableBuffer;
 use clap::Parser;
 use command_buffers::{CommandBuffer, CommandPool};
 use descriptor_sets::{DescriptorPool, DescriptorSet, DescriptorSetLayout};
 use device::Device;
 use instance::Instance;
+
+use crate::utils::log2_floor;
 
 use super::utils::debug_string;
 use pipeline::Pipeline;
@@ -65,7 +67,7 @@ use vek::{
     num_traits::{One, Zero},
     Mat4, Vec2, Vec3, Vec4,
 };
-use vk_mem::{Alloc, AllocationCreateFlags};
+use vk_mem::{Alloc, MemoryUsage};
 use winit::{
     dpi::{LogicalSize, PhysicalSize, Size},
     event_loop::ActiveEventLoop,
@@ -202,10 +204,10 @@ pub struct Context {
     surface_derived: Option<SurfaceDerived>,
     command_buffers: Vec<command_buffers::CommandBuffer>,
     uniform_descriptor_sets: Vec<DescriptorSet>,
-    vertex_buffers: Vec<ManagedMappableBuffer<Vertex>>,
+    vertex_buffers: Vec<MappableBuffer<Vertex>>,
     //TODO: Apparently this uniform buffer is captured by the descriptor set
-    uniform_buffers: Vec<ManagedMappableBuffer<UniformBuffer>>,
-    index_buffers: Vec<ManagedMappableBuffer<u16>>,
+    uniform_buffers: Vec<MappableBuffer<UniformBuffer>>,
+    index_buffers: Vec<MappableBuffer<u16>>,
     image_available_semaphores: Vec<Semaphore>,
     prev_frame_finished_fences: Vec<Fence>,
     frame_index: usize,
@@ -1079,79 +1081,38 @@ impl Context {
         let mut render_complete_semaphores = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT as usize);
         let mut prev_render_complete_fence = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT as usize);
 
-        let vertex_buffer_ci = BufferCreateInfo::default()
-            .sharing_mode(SharingMode::EXCLUSIVE)
-            .usage(BufferUsageFlags::VERTEX_BUFFER)
-            .size(size_of_val(VERTICES) as u64);
-
-        let vertex_buffer_ai = vk_mem::AllocationCreateInfo {
-            flags: vk_mem::AllocationCreateFlags::MAPPED
-                | vk_mem::AllocationCreateFlags::HOST_ACCESS_SEQUENTIAL_WRITE,
-            usage: vk_mem::MemoryUsage::AutoPreferDevice,
-            required_flags: MemoryPropertyFlags::HOST_VISIBLE | MemoryPropertyFlags::HOST_COHERENT,
-
-            ..Default::default()
-        };
-        let index_buffer_ci = BufferCreateInfo::default()
-            .sharing_mode(SharingMode::EXCLUSIVE)
-            .usage(BufferUsageFlags::INDEX_BUFFER)
-            .size(size_of_val(INDICES) as u64);
-
-        let index_buffer_ai = vk_mem::AllocationCreateInfo {
-            flags: vk_mem::AllocationCreateFlags::MAPPED
-                | vk_mem::AllocationCreateFlags::HOST_ACCESS_SEQUENTIAL_WRITE,
-            usage: vk_mem::MemoryUsage::AutoPreferDevice,
-            required_flags: MemoryPropertyFlags::HOST_VISIBLE | MemoryPropertyFlags::HOST_COHERENT,
-            ..Default::default()
-        };
-        let uniform_buffer_ci = BufferCreateInfo::default()
-            .sharing_mode(SharingMode::EXCLUSIVE)
-            .usage(BufferUsageFlags::UNIFORM_BUFFER)
-            .size(size_of::<UniformBuffer>() as u64);
-
-        let uniform_buffer_ai = vk_mem::AllocationCreateInfo {
-            flags: vk_mem::AllocationCreateFlags::MAPPED
-                | vk_mem::AllocationCreateFlags::HOST_ACCESS_SEQUENTIAL_WRITE,
-            usage: vk_mem::MemoryUsage::AutoPreferHost,
-            required_flags: MemoryPropertyFlags::HOST_VISIBLE | MemoryPropertyFlags::HOST_COHERENT,
-            ..Default::default()
-        };
-
         for i in 0..MAX_FRAMES_IN_FLIGHT {
             vertex_buffers.push(
-                //SAFETY: valid ci and ai
-                unsafe {
-                    ManagedMappableBuffer::new(
-                        &device,
-                        &vertex_buffer_ci,
-                        &vertex_buffer_ai,
-                        debug_string!(device.is_debug(), "Vertex buffer {}", i),
-                    )
-                }
+                MappableBuffer::new(
+                    &device,
+                    size_of_val(VERTICES) as u64,
+                    BufferUsageFlags::VERTEX_BUFFER,
+                    MemoryUsage::AutoPreferDevice,
+                    None,
+                    debug_string!(device.is_debug(), "Vertex Buffer {}", i),
+                )
                 .unwrap(),
             );
             index_buffers.push(
-                //SAFETY: valid ci and ai
-                unsafe {
-                    ManagedMappableBuffer::new(
-                        &device,
-                        &index_buffer_ci,
-                        &index_buffer_ai,
-                        debug_string!(device.is_debug(), "Index buffer {}", i),
-                    )
-                }
+                MappableBuffer::new(
+                    &device,
+                    size_of_val(INDICES) as u64,
+                    BufferUsageFlags::INDEX_BUFFER,
+                    MemoryUsage::AutoPreferDevice,
+                    None,
+                    debug_string!(device.is_debug(), "Index buffer {}", i),
+                )
                 .unwrap(),
             );
             uniform_buffers.push(
-                //SAFETY: valid ci and ai
-                unsafe {
-                    ManagedMappableBuffer::new(
-                        &device,
-                        &uniform_buffer_ci,
-                        &uniform_buffer_ai,
-                        debug_string!(device.is_debug(), "Uniform buffer {}", i),
-                    )
-                }
+                MappableBuffer::new(
+                    &device,
+                    size_of::<UniformBuffer>() as u64,
+                    BufferUsageFlags::UNIFORM_BUFFER,
+                    MemoryUsage::AutoPreferHost,
+                    None,
+                    debug_string!(device.is_debug(), "uniform buffer {}", i),
+                )
                 .unwrap(),
             );
             image_available_semaphores.push(
@@ -1742,29 +1703,15 @@ impl GpuImage {
             .map_err(|_| LoadTextureFromFileError::InvalidTextureFile)?
             .into_rgba8();
 
-        let staging_buffer_ci = BufferCreateInfo::default()
-            .usage(BufferUsageFlags::TRANSFER_SRC)
-            .size(size_of_val(image_buffer.as_raw().deref()) as u64)
-            .sharing_mode(SharingMode::EXCLUSIVE);
-
-        let staging_buffer_ai = vk_mem::AllocationCreateInfo {
-            flags: AllocationCreateFlags::MAPPED
-                | AllocationCreateFlags::HOST_ACCESS_SEQUENTIAL_WRITE,
-            usage: vk_mem::MemoryUsage::AutoPreferHost,
-            required_flags: MemoryPropertyFlags::HOST_VISIBLE,
-            preferred_flags: MemoryPropertyFlags::HOST_COHERENT,
-            ..Default::default()
-        };
-
         //SAFETY: Valid ci and ai
-        let staging_buffer: ManagedMappableBuffer<u8> = unsafe {
-            ManagedMappableBuffer::new(
-                device,
-                &staging_buffer_ci,
-                &staging_buffer_ai,
-                debug_string!(device.is_debug(), "Staging buffer"),
-            )
-        }
+        let staging_buffer: MappableBuffer<u8> = MappableBuffer::new(
+            device,
+            size_of_val(image_buffer.as_ref()) as u64,
+            BufferUsageFlags::TRANSFER_SRC,
+            MemoryUsage::AutoPreferHost,
+            None,
+            debug_string!(device.is_debug(), "Staging buffer"),
+        )
         .unwrap();
 
         let raw_image = image_buffer.as_raw();
@@ -1775,8 +1722,7 @@ impl GpuImage {
             .alloc_command_buffer(CommandBufferLevel::PRIMARY)
             .unwrap();
 
-        //Convenient zero cast way to get a log2
-        let mip_levels = (image_buffer.width().max(image_buffer.height()) as f32).log2() as u32 + 1;
+        let mip_levels = log2_floor(image_buffer.width().max(image_buffer.height()));
 
         let image_create_info = ImageCreateInfo::default()
             .image_type(ImageType::TYPE_2D)
@@ -2146,7 +2092,7 @@ impl GpuImage {
             )
             .map_err(|_| LoadTextureFromFileError::MipmapGenerationError)?;
         struct Return {
-            _staging_buffer: ManagedMappableBuffer<u8>,
+            _staging_buffer: MappableBuffer<u8>,
             _cb: CommandBuffer,
             _sem: Semaphore,
             fence: Fence,

@@ -243,13 +243,11 @@ impl Swapchain {
         let mut framebuffers = Vec::with_capacity(self.image_views.len());
         for (i, iv) in self.image_views.iter().copied().enumerate() {
             let mut attachments = Vec::with_capacity(3);
-            let opt_color_attachment = msaa_color_attachments.next().map(|iv| {
+            let opt_color_attachment = msaa_color_attachments.next().inspect(|iv| {
                 attachments.push(iv.inner);
-                iv
             });
-            let opt_depth_attachment = depth_attachments.next().map(|iv| {
+            let opt_depth_attachment = depth_attachments.next().inspect(|iv| {
                 attachments.push(iv.inner);
-                iv
             });
             attachments.push(iv);
             let framebuffer_ci = FramebufferCreateInfo::default()
