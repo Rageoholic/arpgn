@@ -1,5 +1,5 @@
 #![warn(unsafe_op_in_unsafe_fn)]
-#![allow(clippy::redundant_closure)]
+#![allow(clippy::redundant_closure, clippy::too_many_arguments)]
 
 use clap::Parser;
 use graphics::Context;

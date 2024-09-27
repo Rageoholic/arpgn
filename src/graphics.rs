@@ -58,6 +58,7 @@ use pipeline_layout::PipelineLayout;
 use render_pass::RenderPass;
 use shader_module::ShaderModule;
 use strum::EnumString;
+use utils::FenceProducer;
 
 use surface::Surface;
 use swapchain::Swapchain;
@@ -1672,10 +1673,6 @@ struct GpuImage {
     mip_levels: u32,
 }
 
-trait FenceProducer {
-    type Iter: Iterator<Item = ash::vk::Fence>;
-    fn get_fences(&self) -> Self::Iter;
-}
 #[derive(Debug, thiserror::Error)]
 enum LoadTextureFromFileError {
     #[error("Attempted to load invalid file")]
@@ -1704,7 +1701,7 @@ impl GpuImage {
             .into_rgba8();
 
         //SAFETY: Valid ci and ai
-        let staging_buffer: MappableBuffer<u8> = MappableBuffer::new(
+        let mut staging_buffer: MappableBuffer<u8> = MappableBuffer::new(
             device,
             size_of_val(image_buffer.as_ref()) as u64,
             BufferUsageFlags::TRANSFER_SRC,

@@ -13,3 +13,8 @@ macro_rules! associate_debug_name {
 }
 
 pub(crate) use associate_debug_name;
+
+pub trait FenceProducer {
+    type Iter: Iterator<Item = ash::vk::Fence>;
+    fn get_fences(&self) -> Self::Iter;
+}
