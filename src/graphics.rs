@@ -14,8 +14,8 @@ use std::{
 use ash::{
     prelude::VkResult,
     vk::{
-        self, api_version_major, api_version_minor, api_version_patch, AccessFlags,
-        ApplicationInfo, AttachmentDescription, AttachmentLoadOp, AttachmentReference,
+        self, api_version_major, api_version_minor, api_version_patch, api_version_variant,
+        AccessFlags, ApplicationInfo, AttachmentDescription, AttachmentLoadOp, AttachmentReference,
         AttachmentStoreOp, BlendFactor, BlendOp, BorderColor, BufferImageCopy, BufferUsageFlags,
         ClearColorValue, ClearDepthStencilValue, ClearValue, ColorComponentFlags,
         CommandBufferBeginInfo, CommandBufferLevel, CommandBufferUsageFlags,
@@ -39,7 +39,7 @@ use ash::{
         SamplerAddressMode, SamplerCreateInfo, SamplerMipmapMode, ShaderStageFlags, SharingMode,
         SubpassContents, SubpassDescription, VertexInputAttributeDescription,
         VertexInputBindingDescription, VertexInputRate, WriteDescriptorSet, API_VERSION_1_0,
-        QUEUE_FAMILY_IGNORED,
+        API_VERSION_1_2, QUEUE_FAMILY_IGNORED,
     },
     LoadingError,
 };
@@ -633,6 +633,34 @@ pub enum ContextCreationError {
     MissingTexture,
     #[error("Couldn't decode texture")]
     InvalidTexture,
+    #[error("Insufficient Vk Version. Target: {0:?}, Actual: {0:?}")]
+    InsufficientVkSupport(VulkanVersionUnpacked, VulkanVersionUnpacked),
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct VulkanVersionUnpacked {
+    variant: u32,
+    major: u32,
+    minor: u32,
+    patch: u32,
+}
+
+impl VulkanVersionUnpacked {
+    pub const fn from_u32(ver: u32) -> Self {
+        let major = api_version_major(ver);
+        let minor = api_version_minor(ver);
+        let patch = api_version_patch(ver);
+        let variant = api_version_variant(ver);
+        Self {
+            variant,
+            major,
+            minor,
+            patch,
+        }
+    }
+
+    pub const fn to_u32(self) -> u32 {
+        vk::make_api_version(self.variant, self.major, self.minor, self.patch)
+    }
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -660,6 +688,8 @@ impl Display for ShaderModuleCreationErrors {
 
 const KHRONOS_VALIDATION_LAYER_NAME: &CStr = c"VK_LAYER_KHRONOS_validation";
 
+const TARGET_VK_VERSION: u32 = API_VERSION_1_2;
+
 impl Context {
     //TODO: Split this function the fuck up. Christ this is long
     pub fn new(
@@ -677,14 +707,31 @@ impl Context {
 
             Err(_) => unreachable!(),
         };
+
+        let vk_version = VulkanVersionUnpacked::from_u32(vk_version);
         log::info!(
-            "Available vk version {}.{}.{}",
-            api_version_major(vk_version),
-            api_version_minor(vk_version),
-            api_version_patch(vk_version)
+            "Available vk version {}.{}.{}.{}",
+            vk_version.variant,
+            vk_version.minor,
+            vk_version.major,
+            vk_version.patch
         );
+        let target_vk_version = VulkanVersionUnpacked::from_u32(TARGET_VK_VERSION);
+        log::info!(
+            "Target vk version {}.{}.{}.{}",
+            target_vk_version.variant,
+            target_vk_version.major,
+            target_vk_version.minor,
+            target_vk_version.patch
+        );
+        if target_vk_version > vk_version {
+            return Err(ContextCreationError::InsufficientVkSupport(
+                vk_version,
+                target_vk_version,
+            ));
+        }
         let app_info = ApplicationInfo::default()
-            .api_version(ash::vk::API_VERSION_1_0)
+            .api_version(target_vk_version.to_u32())
             .application_name(c"arpgn");
         let avail_device_extensions =
         //SAFETY: Should always be good
