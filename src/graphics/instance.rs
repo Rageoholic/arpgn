@@ -10,11 +10,12 @@
 
 // * Do not destroy inner except in drop()
 
-use std::{fmt::Debug, sync::Arc};
+use std::{ffi::CString, fmt::Debug, str::FromStr, sync::Arc};
 
 use ash::{
     prelude::VkResult,
     vk::{
+        DebugUtilsMessageSeverityFlagsEXT, DebugUtilsMessageTypeFlagsEXT,
         DebugUtilsMessengerCreateInfoEXT, ExtensionProperties, Handle, InstanceCreateInfo,
         PhysicalDevice, PhysicalDeviceFeatures, PhysicalDeviceProperties, QueueFamilyProperties,
     },
@@ -60,6 +61,16 @@ impl Instance {
     }
     pub unsafe fn init_debug_messenger(&mut self, ci: &DebugUtilsMessengerCreateInfoEXT) {
         self.debug = unsafe { DebugMessenger::new(self, ci) }.ok();
+    }
+
+    pub fn test_debug_messenger(&mut self, s: &str) {
+        if let Some(debug_messenger) = self.debug.as_ref() {
+            debug_messenger.send_message(
+                DebugUtilsMessageSeverityFlagsEXT::ERROR,
+                DebugUtilsMessageTypeFlagsEXT::GENERAL,
+                &CString::from_str(s).unwrap(),
+            )
+        }
     }
 
     pub(super) fn parent(&self) -> &Arc<Entry> {

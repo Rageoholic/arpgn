@@ -827,6 +827,7 @@ impl Context {
             //SAFETY: Valid ci. We know cause we made it
             unsafe {
                 instance.init_debug_messenger(&debug_utils_messenger_ci);
+                instance.test_debug_messenger("Test string");
             }
         }
 
@@ -1501,7 +1502,9 @@ impl Context {
                     )
                     .unwrap();
                 }
-                None => {}
+                None => {
+                    //comment to disable warning
+                }
             }
         }
     }
