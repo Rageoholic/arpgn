@@ -144,7 +144,7 @@ impl Device {
         &self,
         family_index: u32,
         queue_index: u32,
-    ) -> Result<MutexGuard<Queue>, QueueRetrievalError> {
+    ) -> Result<MutexGuard<'_, Queue>, QueueRetrievalError> {
         self.queue_families
             .get(&family_index)
             .and_then(|queues| queues.get(queue_index as usize))

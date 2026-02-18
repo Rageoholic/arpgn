@@ -14,12 +14,12 @@ ash = "0.38"
 ash-window = "0.13"
 bytemuck = { version = "1.17", features = ["derive"] }
 clap = { version = "4.5.17", features = ["derive"] }
-image = "0.25.2"
+image = "0.25"
 log = { version = "0.4", features = ["kv"] }
 pretty_env_logger = "0.5"
 shaderc = { version = "0.8", features = ["prefer-static-linking"] }
 strum = { version = "0.26", features = ["strum_macros", "derive"] }
-thiserror = "1.0"
+thiserror = "2.0"
 vek = { version = "0.17", features = ["bytemuck"] }
 vk-mem = "0.4"
 winit = "0.30"
