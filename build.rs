@@ -33,8 +33,8 @@ impl TryFrom<&str> for ShaderType {
 }
 
 fn main() {
-    println!("cargo::rerun-if-changed=res/*");
-    println!("cargo::rerun-if-changed=shaders/*");
+    println!("cargo::rerun-if-changed=shaders/shader.vert");
+    println!("cargo::rerun-if-changed=shaders/shader.frag");
     copy_to_output("res", &env::var("PROFILE").unwrap()).expect("Could not copy");
 
     copy_to_output("shaders", &env::var("PROFILE").unwrap()).expect("Unable to copy shaders");
